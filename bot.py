@@ -1,25 +1,21 @@
 """
-Телеграм-бот для учёта расходов
-python-telegram-bot 21.x + Python 3.13 совместимый
+Телеграм-бот для учёта расходов с Mini App
 """
 
-import os
-import re
-import csv
-import asyncio
+import os, re, csv
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
 TELEGRAM_TOKEN = "8698682076:AAGa2VWg3MN0IdJcQ64Rtuegg4Mt9GvvCYE"
+WEBAPP_URL = os.getenv("WEBAPP_URL", "")
 LOCAL_CSV = "expenses.csv"
 ALLOWED_USER_ID = 0
 
 CATEGORIES = [
-    "🛒 Продукты", "🏠 Квартплата", "🚌 Транспорт", "📱 Связь/Подписки",
-    "🍽 Рестораны/Кафе", "👕 Одежда", "💊 Медицина", "🎮 Развлечения",
-    "🏋 Спорт", "✈️ Путешествия", "📚 Учёба", "🔧 Быт",
-    "💰 Инвестиции", "📦 Другое",
+    "🛒 Продукты","🏠 Квартплата","🚌 Транспорт","📱 Связь/Подписки",
+    "🍽 Рестораны/Кафе","👕 Одежда","💊 Медицина","🎮 Развлечения",
+    "🏋 Спорт","✈️ Путешествия","📚 Учёба","🔧 Быт","💰 Инвестиции","📦 Другое",
 ]
 
 pending = {}
@@ -27,7 +23,7 @@ pending = {}
 def ensure_csv():
     if not os.path.exists(LOCAL_CSV):
         with open(LOCAL_CSV, "w", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow(["Дата", "Сумма", "Категория", "Описание", "Тип", "Месяц"])
+            csv.writer(f).writerow(["Дата","Сумма","Категория","Описание","Тип","Месяц"])
 
 def read_csv():
     ensure_csv()
@@ -37,10 +33,7 @@ def read_csv():
 def write_csv(date, amount, category, description, tx_type):
     ensure_csv()
     with open(LOCAL_CSV, "a", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow([
-            date.strftime("%d.%m.%Y"), amount, category,
-            description, tx_type, date.strftime("%Y-%m")
-        ])
+        csv.writer(f).writerow([date.strftime("%d.%m.%Y"), amount, category, description, tx_type, date.strftime("%Y-%m")])
 
 def is_allowed(update: Update) -> bool:
     return ALLOWED_USER_ID == 0 or update.effective_user.id == ALLOWED_USER_ID
@@ -52,9 +45,18 @@ def category_keyboard():
         if len(row) == 2:
             buttons.append(row)
             row = []
-    if row:
-        buttons.append(row)
+    if row: buttons.append(row)
     buttons.append([InlineKeyboardButton("❌ Отмена", callback_data="cat:cancel")])
+    return InlineKeyboardMarkup(buttons)
+
+def main_keyboard():
+    buttons = []
+    if WEBAPP_URL:
+        buttons.append([InlineKeyboardButton("📊 Открыть дашборд", web_app=WebAppInfo(url=WEBAPP_URL))])
+    buttons.append([
+        InlineKeyboardButton("📋 /stats", callback_data="cmd:stats"),
+        InlineKeyboardButton("📝 /last", callback_data="cmd:last"),
+    ])
     return InlineKeyboardMarkup(buttons)
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -63,9 +65,9 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "👋 *Бот учёта расходов*\n\n"
         "Напиши трату:\n`кофе 4.5` или `продукты 47`\n\n"
         "Доход с плюсом:\n`зарплата +3411`\n\n"
-        "/stats — статистика за месяц\n"
-        "/last — последние 5 записей",
-        parse_mode="Markdown"
+        "/stats — статистика\n/last — последние записи",
+        parse_mode="Markdown",
+        reply_markup=main_keyboard()
     )
 
 async def stats_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -90,7 +92,8 @@ async def stats_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if total_inc > 0:
         lines.append(f"💚 Доходы: *{total_inc:.2f} €*")
         lines.append(f"📈 Остаток: *{total_inc - total_exp:.2f} €*")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    msg = update.message or (update.callback_query.message if update.callback_query else None)
+    if msg: await msg.reply_text("\n".join(lines), parse_mode="Markdown")
 
 async def last_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update): return
@@ -129,14 +132,21 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=category_keyboard(), parse_mode="Markdown"
     )
 
-async def handle_category(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
+
+    if query.data.startswith("cmd:"):
+        cmd = query.data.split(":")[1]
+        if cmd == "stats": await stats_cmd(update, ctx)
+        return
+
     if query.data == "cat:cancel":
         pending.pop(user_id, None)
         await query.edit_message_text("❌ Отменено.")
         return
+
     category = query.data.replace("cat:", "")
     info = pending.pop(user_id, None)
     if not info:
@@ -156,7 +166,7 @@ def main():
     app.add_handler(CommandHandler("help", start))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("last", last_cmd))
-    app.add_handler(CallbackQueryHandler(handle_category, pattern="^cat:"))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("🤖 Бот запущен!")
     app.run_polling(drop_pending_updates=True)
