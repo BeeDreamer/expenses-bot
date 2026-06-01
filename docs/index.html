@@ -293,17 +293,29 @@ function getUserId() {
 // ── DATA LOADING ───────────────────────────────────────────────────────────────
 async function loadData() {
   setSyncStatus('Syncing...', '');
+  
+  // Load cached data first so UI is not empty
+  const cached = localStorage.getItem('fin_cache');
+  if (cached) {
+    try {
+      const d = JSON.parse(cached);
+      allTxs = d.txs || [];
+      allAccs = d.accs || getDefaultAccs();
+      renderAll();
+    } catch(e) {}
+  }
+
   try {
-    const uid = getUserId();
-    const url = uid ? `${API_BASE}/api/transactions?user_id=${uid}` : `${API_BASE}/api/transactions`;
+    const uid = getUserId() || localStorage.getItem('tg_uid');
+    if (!uid) { setSyncStatus('Open via Telegram bot', 'err'); return; }
+    const url = `${API_BASE}/api/transactions?user_id=${uid}`;
     const resp = await fetch(url, { headers: getHeaders() });
     if (!resp.ok) throw new Error('API error ' + resp.status);
     const data = await resp.json();
     
-    // Convert Sheets format to app format
-    allTxs = (data.transactions || []).map((r, i) => ({
+    const newTxs = (data.transactions || []).map((r, i) => ({
       id: String(i),
-      type: r.Type || r.type || 'expense',
+      type: (r.Type || r.type || 'expense').toLowerCase(),
       amount: parseFloat(r.Amount || r.amount || 0),
       category: r.Category || r.category || 'Other',
       description: r.Description || r.description || '',
@@ -311,19 +323,22 @@ async function loadData() {
       accountId: r.AccountId || r.accountId || 'a1',
       date: parseDate(r.Date || r.date || new Date().toISOString()),
       month: r.Month || r.month || ''
-    })).filter(t => t.type !== 'budget' && t.type !== 'template' && t.type !== 'account');
+    })).filter(t => !['budget','template','account'].includes(t.type));
 
-    allAccs = data.accounts || getDefaultAccs();
+    // Only update if we got real data
+    if (newTxs.length > 0 || allTxs.length === 0) {
+      allTxs = newTxs;
+    }
+    allAccs = (data.accounts && data.accounts.length > 0) ? data.accounts : allAccs;
+    
+    // Cache for offline use
+    localStorage.setItem('fin_cache', JSON.stringify({txs: allTxs, accs: allAccs}));
     setSyncStatus('Synced ✓', 'ok');
     renderAll();
   } catch(e) {
     console.error(e);
     setSyncStatus('Offline — local data', 'err');
-    // Fallback to localStorage
-    const cached = localStorage.getItem('fin_cache');
-    if (cached) { const d = JSON.parse(cached); allTxs=d.txs||[]; allAccs=d.accs||getDefaultAccs(); }
-    else { allTxs=[]; allAccs=getDefaultAccs(); }
-    renderAll();
+    if (!cached) { allTxs = []; allAccs = getDefaultAccs(); renderAll(); }
   }
 }
 
@@ -565,6 +580,9 @@ function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t
 
 // ── INIT ───────────────────────────────────────────────────────────────────────
 tgInitData = getTgInitData();
+// Save user id for future use
+const _uid = getUserId();
+if (_uid) localStorage.setItem('tg_uid', _uid);
 updateMonthLabel();
 renderChips();
 loadData();
