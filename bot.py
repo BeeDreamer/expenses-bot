@@ -509,10 +509,7 @@ async def exportxls_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_document(
         document=output,
         filename=filename,
-        caption=f"*Your Finance Report*
-{len(rows)} transactions exported
-Sheet 1: All transactions
-Sheet 2: Monthly summary",
+        caption=f"Your Finance Report: {len(rows)} transactions. Sheet 1: Transactions, Sheet 2: Monthly summary.",  # noqa
         parse_mode="Markdown"
     )
 
