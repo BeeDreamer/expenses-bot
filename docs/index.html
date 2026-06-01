@@ -191,42 +191,18 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--txt);min-
     <div class="setup-title">Finance Dashboard</div>
     <div class="setup-sub">Track your expenses, income & investments</div>
 
-    <div class="setup-tabs">
-      <div class="setup-tab on" onclick="switchSetupMode('bot',this)">Telegram Bot</div>
-      <div class="setup-tab" onclick="switchSetupMode('sheet',this)">Google Sheet</div>
+    <div id="setupAutoMsg" style="display:none;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:12px;margin-bottom:16px;font-size:13px;color:#166534;text-align:center;">
+      ✅ Logged in via Telegram automatically
     </div>
 
-    <!-- BOT MODE -->
-    <div id="mode-bot">
-      <div id="setupAutoMsg" style="display:none;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:12px;margin-bottom:16px;font-size:13px;color:#166534;text-align:center;">
-        ✅ Logged in via Telegram automatically
-      </div>
-      <div class="setup-label">Your Telegram User ID</div>
-      <input class="setup-input" id="userId" placeholder="123456789" type="number">
-      <div class="setup-hint">
-        <b>How to find your ID:</b><br>
-        1. Open Telegram and message <a href="https://t.me/userinfobot" target="_blank" style="color:var(--acc);font-weight:700;">@userinfobot</a><br>
-        2. It will reply with your ID (e.g. <code>123456789</code>)<br>
-        3. Paste it above and tap Login<br><br>
-        <b>Or</b> open this dashboard from the bot button — your ID will be detected automatically.
-      </div>
-    </div>
-
-    <!-- SHEET MODE -->
-    <div id="mode-sheet" style="display:none">
-      <div class="setup-label">Google Sheet ID</div>
-      <input class="setup-input" id="sheetId" placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms">
-      <div class="setup-label">Sheet tab (leave 0 for first tab)</div>
-      <input class="setup-input" id="sheetGid" placeholder="0" value="0">
-      <div class="setup-hint">
-        <b>How to connect your Google Sheet:</b><br>
-        1. Open your Google Sheet<br>
-        2. Copy the ID from the URL:<br>
-        <code>docs.google.com/spreadsheets/d/<b style="color:var(--acc)">YOUR_ID</b>/edit</code><br>
-        3. Click <b>Share</b> → <b>Anyone with the link</b> → <b>Viewer</b><br>
-        4. Your sheet must have columns: <code>Date</code>, <code>Amount</code>, <code>Category</code>, <code>Type</code>, <code>Month</code><br>
-        (or Russian: <code>Дата</code>, <code>Сумма (€)</code>, <code>Категория</code>, <code>Тип</code>, <code>Месяц</code>)
-      </div>
+    <div class="setup-label">Your Telegram User ID</div>
+    <input class="setup-input" id="userId" placeholder="123456789" type="number">
+    <div class="setup-hint">
+      <b>How to find your ID:</b><br>
+      1. Open Telegram and message <a href="https://t.me/userinfobot" target="_blank" style="color:var(--acc);font-weight:700;">@userinfobot</a><br>
+      2. It will reply with your ID (e.g. <code>123456789</code>)<br>
+      3. Paste it above and tap Login<br><br>
+      <b>Or</b> open this dashboard from the bot button — your ID will be detected automatically.
     </div>
 
     <button class="setup-btn" onclick="connect()">Login →</button>
@@ -420,14 +396,7 @@ let cfg={mode:'api',apiUrl:'',userId:''};
 const API_URL = 'https://expenses-bot-production.up.railway.app';
 let setupMode = 'bot';
 
-function switchSetupMode(mode, btn){
-  setupMode = mode;
-  document.querySelectorAll('.setup-tab').forEach(t=>t.classList.remove('on'));
-  btn.classList.add('on');
-  document.getElementById('mode-bot').style.display = mode==='bot' ? 'block' : 'none';
-  document.getElementById('mode-sheet').style.display = mode==='sheet' ? 'block' : 'none';
-}
-
+function switchSetupMode(mode,btn){} // compatibility
 function switchSetupTab(mode,btn){} // compatibility
 
 function openSetup(){
@@ -438,16 +407,9 @@ function openSetup(){
 async function connect(){
   const err=document.getElementById('setupErr');
   err.style.display='none';
-  if(setupMode==='sheet'){
-    const sid=document.getElementById('sheetId').value.trim();
-    const gid=document.getElementById('sheetGid').value.trim();
-    if(!sid){err.textContent='Please enter your Google Sheet ID';err.style.display='block';return;}
-    cfg={mode:'sheet',sheetId:sid,sheetGid:gid||'0'};
-  } else {
-    const uid=document.getElementById('userId').value.trim();
-    if(!uid){err.textContent='Please enter your Telegram User ID';err.style.display='block';return;}
-    cfg={mode:'api',apiUrl:API_URL,userId:uid};
-  }
+  const uid=document.getElementById('userId').value.trim();
+  if(!uid){err.textContent='Please enter your Telegram User ID';err.style.display='block';return;}
+  cfg={mode:'api',apiUrl:API_URL,userId:uid};
   localStorage.setItem('fin_cfg',JSON.stringify(cfg));
   document.getElementById('setup').style.display='none';
   document.getElementById('app').style.display='block';
