@@ -369,8 +369,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--txt);min-
         <option value="invest">📈 Investments</option><option value="card">💳 Card</option>
       </select>
     </div>
-    <div class="fg"><div class="fl">Current balance (€) — считается автоматически</div><input class="fi" type="number" id="aBal" placeholder="0.00" readonly style="background:var(--sur2);color:var(--mut)"></div>
-    <div class="fg"><div class="fl">Starting balance (€)</div><input class="fi" type="number" id="aInitBal" placeholder="Сколько сейчас на счёте"></div>
+    <div class="fg"><div class="fl">Balance (€)</div><input class="fi" type="number" id="aBal" placeholder="0.00" step="0.01"></div>
     <button class="msave" onclick="saveAcc()">Save</button>
   </div>
 </div>
@@ -477,17 +476,9 @@ async function loadFromApi(){
 }
 
 function recalcBalances(){
-  allAccs.forEach(acc=>{
-    const init=parseFloat(acc.initialBalance||0);
-    if(acc.primary){
-      const inc=allTxs.filter(t=>t.type==='income').reduce((s,t)=>s+parseFloat(t.amount),0);
-      const exp=allTxs.filter(t=>t.type==='expense').reduce((s,t)=>s+parseFloat(t.amount),0);
-      acc.balance=init+inc-exp;
-    } else {
-      const invested=allTxs.filter(t=>t.type==='transfer'&&t.accountId===acc.id).reduce((s,t)=>s+parseFloat(t.amount),0);
-      acc.balance=init+invested;
-    }
-  });
+  // Balance is now fully manual — no auto-calculation
+  // Just ensure all accounts have a numeric balance
+  allAccs.forEach(a=>{ a.balance=parseFloat(a.balance||0); });
 }
 
 // ── CSV PARSER ─────────────────────────────────────────────────────────────
@@ -558,14 +549,21 @@ async function quickAdd(){
     const toAccId=document.getElementById('qTrfAcc').value;
     const toAcc=allAccs.find(a=>a.id===toAccId);
     if(!toAcc){toast('Select target account');return;}
+    const fromAcc=allAccs.find(a=>a.primary)||allAccs[0];
+    if(fromAcc) fromAcc.balance=parseFloat(fromAcc.balance)-amt;
+    toAcc.balance=parseFloat(toAcc.balance)+amt;
     allTxs.push({id:'local_'+Date.now(),type:'transfer',amount:amt,category:'Investments',description:desc||'→ '+toAcc.name,date:now2.toISOString(),month,account:toAcc.name,accountId:toAccId,_local:true});
-    recalcBalances();
     saveAccounts();
     toast('Transfer recorded ✓');
   } else {
     const cat=selCat||(qType==='expense'?ECATS[0]:ICATS[0]);
     allTxs.push({id:'local_'+Date.now(),type:qType,amount:amt,category:cat,description:desc||cat,date:now2.toISOString(),month,account:'Main',accountId:'a1',_local:true});
-    recalcBalances();
+    const primaryAcc=allAccs.find(a=>a.primary)||allAccs[0];
+    if(primaryAcc){
+      if(qType==='expense') primaryAcc.balance=parseFloat(primaryAcc.balance)-amt;
+      else primaryAcc.balance=parseFloat(primaryAcc.balance)+amt;
+    }
+    saveAccounts();
     toast('Added!');
     if(cfg.mode==='api'&&cfg.apiUrl&&cfg.userId){
       try{
@@ -860,25 +858,22 @@ function openAccModal(id){
     document.getElementById('aName').value=acc.name;
     document.getElementById('aType').value=acc.type;
     document.getElementById('aBal').value=parseFloat(acc.balance||0).toFixed(2);
-    document.getElementById('aInitBal').value=acc.initialBalance||0;
   } else {
     document.getElementById('accModalTitle').textContent='New account';
     document.getElementById('aName').value='';
-    document.getElementById('aBal').value='0.00';
-    document.getElementById('aInitBal').value='0';
+    document.getElementById('aBal').value='0';
   }
   openModal('accModal');
 }
 function saveAcc(){
   const name=document.getElementById('aName').value.trim();if(!name){toast('Enter a name');return;}
-  const initBal=parseFloat(document.getElementById('aInitBal').value)||0;
+  const bal=parseFloat(document.getElementById('aBal').value)||0;
   if(editAccId){
     const acc=allAccs.find(a=>a.id===editAccId);
-    if(acc){acc.name=name;acc.type=document.getElementById('aType').value;acc.initialBalance=initBal;}
+    if(acc){acc.name=name;acc.type=document.getElementById('aType').value;acc.balance=bal;}
   } else {
-    allAccs.push({id:'a'+Date.now(),name,type:document.getElementById('aType').value,balance:initBal,initialBalance:initBal});
+    allAccs.push({id:'a'+Date.now(),name,type:document.getElementById('aType').value,balance:bal});
   }
-  recalcBalances();
   closeModal('accModal');renderAll();
   saveAccounts();
   toast('Account saved');
