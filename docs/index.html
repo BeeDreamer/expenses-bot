@@ -417,14 +417,18 @@ async function quickAdd() {
   if(acc){acc.balance=parseFloat(acc.balance)+(qType==='income'?amt:-amt);}
   document.getElementById('qAmt').value='';
   document.getElementById('qDesc').value='';
-  selCat=null;renderChips();renderAll();toast('Saving...');
+  selCat=null;renderChips();
+  
+  // Save to cache immediately
+  localStorage.setItem('fin_cache', JSON.stringify({txs:allTxs, accs:allAccs}));
+  renderAll();
+  toast('Saved!');
 
+  // Try to sync to server in background
   try {
     await apiPost('/api/transactions', tx);
-    toast('Saved!');
-    setTimeout(loadData, 1000);
   } catch(e) {
-    toast('Saved locally');
+    console.log('Offline, saved locally');
   }
 }
 
@@ -580,12 +584,28 @@ function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t
 
 // ── INIT ───────────────────────────────────────────────────────────────────────
 tgInitData = getTgInitData();
-// Save user id for future use
 const _uid = getUserId();
 if (_uid) localStorage.setItem('tg_uid', _uid);
 updateMonthLabel();
 renderChips();
-loadData();
+
+// Load from cache first, then try API silently
+const _cached = localStorage.getItem('fin_cache');
+if (_cached) {
+  try {
+    const _d = JSON.parse(_cached);
+    allTxs = _d.txs || [];
+    allAccs = _d.accs || getDefaultAccs();
+  } catch(e) { allTxs=[]; allAccs=getDefaultAccs(); }
+} else {
+  allTxs = [];
+  allAccs = getDefaultAccs();
+}
+renderAll();
+setSyncStatus('Local data', '');
+
+// Only auto-sync if opened from Telegram (has user id)
+if (_uid) { setTimeout(loadData, 500); }
 </script>
 </body>
 </html>
