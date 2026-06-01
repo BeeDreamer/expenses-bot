@@ -5,6 +5,13 @@ Data is fully isolated between users.
 """
 
 import os, re, csv, io, logging
+try:
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    XLSX_OK = True
+except ImportError:
+    XLSX_OK = False
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
@@ -180,7 +187,8 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "📋 *Commands:*\n"
         "/stats — monthly breakdown\n"
         "/compare — vs last month\n"
-        "/export — download your data as CSV\n"
+        "/export — download CSV\n"
+        "/exportxls — download Excel report\n"
         "/find coffee — search transactions\n"
         "/last — last 10 transactions\n"
         "/addq coffee 4.5 Dining — save quick template\n"
@@ -381,6 +389,133 @@ async def deletedata_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown", reply_markup=keyboard
     )
 
+
+async def exportxls_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    rows = get_tx(uid)
+    rows = [r for r in rows if r.get("Type") not in ("budget","template")]
+    if not rows:
+        await update.message.reply_text("No transactions to export yet.")
+        return
+    if not XLSX_OK:
+        await export_cmd(update, ctx)
+        return
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Transactions"
+
+    # Styles
+    gold = "B8860B"
+    dark = "1A1A1A"
+    light_gold = "FEF9EC"
+    light_gray = "F5F5F5"
+    red_fill = "FFF0F0"
+    green_fill = "F0FFF4"
+
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill("solid", fgColor=dark)
+    header_align = Alignment(horizontal="center", vertical="center")
+
+    title_font = Font(bold=True, color=gold, size=14)
+    ws.merge_cells("A1:G1")
+    ws["A1"] = f"💰 Finance Report — {update.effective_user.first_name or 'User'}"
+    ws["A1"].font = title_font
+    ws["A1"].alignment = Alignment(horizontal="center")
+    ws["A1"].fill = PatternFill("solid", fgColor="1A1A1A")
+
+    ws.merge_cells("A2:G2")
+    from datetime import datetime as dt
+    ws["A2"] = f"Generated: {dt.now().strftime('%d.%m.%Y %H:%M')}"
+    ws["A2"].font = Font(color="888888", size=10, italic=True)
+    ws["A2"].alignment = Alignment(horizontal="center")
+    ws["A2"].fill = PatternFill("solid", fgColor="1A1A1A")
+
+    ws.append([])  # row 3 empty
+
+    # Headers
+    headers = ["Date", "Amount (€)", "Category", "Description", "Type", "Month"]
+    ws.append(headers)
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=4, column=col)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
+
+    # Data
+    for row in rows:
+        tx_type = row.get("Type","expense")
+        amount = float(row.get("Amount",0))
+        ws.append([
+            row.get("Date",""),
+            amount if tx_type=="income" else -amount,
+            row.get("Category",""),
+            row.get("Description",""),
+            tx_type.capitalize(),
+            row.get("Month",""),
+        ])
+        r = ws.max_row
+        fill_color = green_fill if tx_type=="income" else red_fill
+        for col in range(1,7):
+            ws.cell(r,col).fill = PatternFill("solid", fgColor=fill_color)
+            ws.cell(r,col).alignment = Alignment(vertical="center")
+        ws.cell(r,2).number_format = '#,##0.00 "€"'
+
+    # Summary sheet
+    ws2 = wb.create_sheet("Summary")
+    ws2["A1"] = "Summary by Month"
+    ws2["A1"].font = Font(bold=True, color=gold, size=13)
+    ws2["A1"].fill = PatternFill("solid", fgColor=dark)
+
+    by_month = {}
+    for row in rows:
+        m = row.get("Month","")
+        t = row.get("Type","expense")
+        amt = float(row.get("Amount",0))
+        if m not in by_month: by_month[m]={"income":0,"expense":0}
+        by_month[m][t] = by_month[m].get(t,0)+amt
+
+    ws2.append([])
+    ws2.append(["Month","Income (€)","Expenses (€)","Balance (€)"])
+    for col in range(1,5):
+        ws2.cell(3,col).font = header_font
+        ws2.cell(3,col).fill = header_fill
+        ws2.cell(3,col).alignment = header_align
+
+    for month in sorted(by_month.keys()):
+        inc = by_month[month].get("income",0)
+        exp = by_month[month].get("expense",0)
+        bal = inc - exp
+        ws2.append([month, inc, exp, bal])
+        r = ws2.max_row
+        ws2.cell(r,2).font = Font(color="16A34A", bold=True)
+        ws2.cell(r,3).font = Font(color="DC2626", bold=True)
+        ws2.cell(r,4).font = Font(color=gold if bal>=0 else "DC2626", bold=True)
+        for col in range(1,5):
+            ws2.cell(r,col).fill = PatternFill("solid", fgColor=light_gray)
+            ws2.cell(r,col).number_format = '#,##0.00 "€"' if col>1 else "General"
+
+    # Column widths
+    for ws_sheet in [ws, ws2]:
+        for col in ws_sheet.columns:
+            max_len = max(len(str(c.value or "")) for c in col)
+            ws_sheet.column_dimensions[get_column_letter(col[0].column)].width = min(max_len+4, 30)
+
+    # Save
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    filename = f"finances_{dt.now().strftime('%Y%m%d')}.xlsx"
+    await update.message.reply_document(
+        document=output,
+        filename=filename,
+        caption=f"📊 *Your Finance Report*
+{len(rows)} transactions exported
+_Sheet 1: All transactions_
+_Sheet 2: Monthly summary_",
+        parse_mode="Markdown"
+    )
+
 # ─── MESSAGE HANDLER ──────────────────────────────────────────────────────────
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -485,6 +620,7 @@ def main():
     app.add_handler(CommandHandler("addq", addq_cmd))
     app.add_handler(CommandHandler("q", q_cmd))
     app.add_handler(CommandHandler("deletedata", deletedata_cmd))
+    app.add_handler(CommandHandler("exportxls", exportxls_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("🤖 Finance Bot v3 — Multi-user mode started!")
