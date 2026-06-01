@@ -366,7 +366,8 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--txt);min-
         <option value="invest">📈 Investments</option><option value="card">💳 Card</option>
       </select>
     </div>
-    <div class="fg"><div class="fl">Balance (€)</div><input class="fi" type="number" id="aBal" placeholder="0.00"></div>
+    <div class="fg"><div class="fl">Current balance (€) — считается автоматически</div><input class="fi" type="number" id="aBal" placeholder="0.00" readonly style="background:var(--sur2);color:var(--mut)"></div>
+    <div class="fg"><div class="fl">Starting balance (€)</div><input class="fi" type="number" id="aInitBal" placeholder="Сколько сейчас на счёте"></div>
     <button class="msave" onclick="saveAcc()">Save</button>
   </div>
 </div>
@@ -447,6 +448,7 @@ async function loadFromSheet(){
   const resp=await fetch(url);
   if(!resp.ok) throw new Error('Cannot access sheet — share it as "Anyone with link → Viewer"');
   allTxs=parseCsv(await resp.text());
+  recalcBalances();
 }
 
 async function loadFromApi(){
@@ -458,6 +460,21 @@ async function loadFromApi(){
   allTxs=(data.transactions||[]).map((r,i)=>normalizeApiRow(r,i))
     .filter(t=>!['budget','template','account'].includes(t.type));
   if(data.accounts&&data.accounts.length>0) allAccs=data.accounts;
+  recalcBalances();
+}
+
+function recalcBalances(){
+  allAccs.forEach(acc=>{
+    const init=parseFloat(acc.initialBalance||0);
+    if(acc.primary){
+      const inc=allTxs.filter(t=>t.type==='income').reduce((s,t)=>s+parseFloat(t.amount),0);
+      const exp=allTxs.filter(t=>t.type==='expense').reduce((s,t)=>s+parseFloat(t.amount),0);
+      acc.balance=init+inc-exp;
+    } else {
+      const invested=allTxs.filter(t=>t.type==='transfer'&&t.accountId===acc.id).reduce((s,t)=>s+parseFloat(t.amount),0);
+      acc.balance=init+invested;
+    }
+  });
 }
 
 // ── CSV PARSER ─────────────────────────────────────────────────────────────
@@ -534,12 +551,7 @@ async function quickAdd(){
   } else {
     const cat=selCat||(qType==='expense'?ECATS[0]:ICATS[0]);
     allTxs.push({id:'local_'+Date.now(),type:qType,amount:amt,category:cat,description:desc||cat,date:now2.toISOString(),month,account:'Main',accountId:'a1',_local:true});
-    // update primary account balance
-    const primaryAcc=allAccs.find(a=>a.primary)||allAccs[0];
-    if(primaryAcc){
-      if(qType==='expense') primaryAcc.balance=parseFloat(primaryAcc.balance)-amt;
-      else if(qType==='income') primaryAcc.balance=parseFloat(primaryAcc.balance)+amt;
-    }
+    recalcBalances();
     toast('Added!');
     if(cfg.mode==='api'&&cfg.apiUrl&&cfg.userId){
       try{
@@ -754,7 +766,7 @@ function renderAccounts(){
   }
   const maxB=Math.max(...allAccs.map(a=>Math.abs(parseFloat(a.balance))),1);
   document.getElementById('accBars').innerHTML=allAccs.map((a,i)=>`<div class="abar"><span class="abar-lbl">${AICONS[a.type]||'💳'} ${a.name}</span><div class="abar-track"><div class="abar-fill" style="width:${Math.max(parseFloat(a.balance),0)/maxB*100}%;background:${COLORS[i%COLORS.length]}"></div></div><span class="abar-val">${parseFloat(a.balance).toFixed(0)} €</span></div>`).join('');
-  document.getElementById('accList').innerHTML=allAccs.map((a,i)=>`<div class="acccard${a.primary?' primary':''}"><div class="acc-top"><div class="acc-left"><span class="acc-ico">${AICONS[a.type]||'💳'}</span><div><div class="acc-name">${a.name}${a.primary?'<span class="acc-badge">Primary</span>':''}</div><div class="acc-type">${a.type}</div></div></div><span class="acc-bal">${parseFloat(a.balance).toFixed(2)} €</span></div><div class="acc-btns"><button class="acc-btn" onclick="openAccModal('${a.id}')">Edit</button>${!a.primary?`<button class="acc-btn pri" onclick="setPrimary('${a.id}')">Set primary</button>`:'<span style="font-size:10px;color:var(--mut);padding:7px;flex:1;text-align:center">Default</span>'}</div></div>`).join('');
+  document.getElementById('accList').innerHTML=allAccs.map((a,i)=>`<div class="acccard${a.primary?' primary':''}"><div class="acc-top"><div class="acc-left"><span class="acc-ico">${AICONS[a.type]||'💳'}</span><div><div class="acc-name">${a.name}${a.primary?'<span class="acc-badge">Primary</span>':''}</div><div class="acc-type">${a.type}</div></div></div><span class="acc-bal" style="color:${parseFloat(a.balance||0)>=0?'var(--acc)':'var(--red)'}">${parseFloat(a.balance||0).toFixed(2)} €</span></div><div class="acc-btns"><button class="acc-btn" onclick="openAccModal('${a.id}')">Edit</button>${!a.primary?`<button class="acc-btn pri" onclick="setPrimary('${a.id}')">Set primary</button><button class="acc-btn" style="color:var(--red);border-color:var(--red);flex:0;padding:7px 10px" onclick="deleteAcc('${a.id}')">✕</button>`:'<span style="font-size:10px;color:var(--mut);padding:7px;flex:1;text-align:center">Default</span>'}</div></div>`).join('');
 }
 
 // ── TX MODAL ───────────────────────────────────────────────────────────────
@@ -782,40 +794,25 @@ function saveTx(){
 }
 function deleteTxModal(){
   if(!editTxId)return;
-  const tx=allTxs.find(t=>t.id===editTxId);
-  if(tx) revertAccBalance(tx);
-  allTxs=allTxs.filter(t=>t.id!==editTxId);
+  const id=editTxId;
+  allTxs=allTxs.filter(t=>t.id!==id);
+  recalcBalances();
   closeModal('txModal');renderAll();
   localStorage.setItem('fin_cache',JSON.stringify({txs:allTxs,accs:allAccs}));
-  syncDeleteToApi(editTxId);
+  syncDeleteToApi(id);
   toast('Deleted');
 }
 function quickDel(id){
-  const tx=allTxs.find(t=>t.id===id);
-  if(tx) revertAccBalance(tx);
   allTxs=allTxs.filter(t=>t.id!==id);
+  recalcBalances();
   renderAll();
   localStorage.setItem('fin_cache',JSON.stringify({txs:allTxs,accs:allAccs}));
   syncDeleteToApi(id);
   toast('Deleted');
 }
 
-// revert account balance when deleting a transaction
-function revertAccBalance(tx){
-  const primaryAcc=allAccs.find(a=>a.primary)||allAccs[0];
-  if(!primaryAcc) return;
-  if(tx.type==='expense') primaryAcc.balance=parseFloat(primaryAcc.balance)+tx.amount;
-  else if(tx.type==='income') primaryAcc.balance=parseFloat(primaryAcc.balance)-tx.amount;
-  else if(tx.type==='transfer'){
-    const toAcc=allAccs.find(a=>a.id===tx.accountId);
-    if(toAcc) toAcc.balance=parseFloat(toAcc.balance)-tx.amount;
-  }
-}
-
-// send DELETE to Railway API
 async function syncDeleteToApi(id){
   if(cfg.mode!=='api'||!cfg.apiUrl||!cfg.userId) return;
-  // only API-saved rows have numeric-ish ids — local rows start with 'local_'
   if(String(id).startsWith('local_')) return;
   try{
     await fetch(`${cfg.apiUrl}/api/transactions/${id}?user_id=${cfg.userId}`,{method:'DELETE'});
@@ -825,17 +822,43 @@ async function syncDeleteToApi(id){
 // ── ACC MODAL ──────────────────────────────────────────────────────────────
 function openAccModal(id){
   editAccId=id;
-  if(id){const acc=allAccs.find(a=>a.id===id);document.getElementById('accModalTitle').textContent='Edit account';document.getElementById('aName').value=acc.name;document.getElementById('aType').value=acc.type;document.getElementById('aBal').value=acc.balance;}
-  else{document.getElementById('accModalTitle').textContent='New account';document.getElementById('aName').value='';document.getElementById('aBal').value='';}
+  if(id){
+    const acc=allAccs.find(a=>a.id===id);
+    document.getElementById('accModalTitle').textContent='Edit account';
+    document.getElementById('aName').value=acc.name;
+    document.getElementById('aType').value=acc.type;
+    document.getElementById('aBal').value=parseFloat(acc.balance||0).toFixed(2);
+    document.getElementById('aInitBal').value=acc.initialBalance||0;
+  } else {
+    document.getElementById('accModalTitle').textContent='New account';
+    document.getElementById('aName').value='';
+    document.getElementById('aBal').value='0.00';
+    document.getElementById('aInitBal').value='0';
+  }
   openModal('accModal');
 }
 function saveAcc(){
   const name=document.getElementById('aName').value.trim();if(!name){toast('Enter a name');return;}
-  if(editAccId){const acc=allAccs.find(a=>a.id===editAccId);if(acc){acc.name=name;acc.type=document.getElementById('aType').value;acc.balance=parseFloat(document.getElementById('aBal').value)||acc.balance;}}
-  else allAccs.push({id:'a'+Date.now(),name,type:document.getElementById('aType').value,balance:parseFloat(document.getElementById('aBal').value)||0});
-  closeModal('accModal');renderAll();toast('Account saved');
+  const initBal=parseFloat(document.getElementById('aInitBal').value)||0;
+  if(editAccId){
+    const acc=allAccs.find(a=>a.id===editAccId);
+    if(acc){acc.name=name;acc.type=document.getElementById('aType').value;acc.initialBalance=initBal;}
+  } else {
+    allAccs.push({id:'a'+Date.now(),name,type:document.getElementById('aType').value,balance:initBal,initialBalance:initBal});
+  }
+  recalcBalances();
+  closeModal('accModal');renderAll();
+  localStorage.setItem('fin_cache',JSON.stringify({txs:allTxs,accs:allAccs}));
+  toast('Account saved');
 }
-function setPrimary(id){allAccs.forEach(a=>delete a.primary);const acc=allAccs.find(a=>a.id===id);if(acc)acc.primary=true;renderAccounts();toast('Primary updated');}
+function setPrimary(id){allAccs.forEach(a=>delete a.primary);const acc=allAccs.find(a=>a.id===id);if(acc)acc.primary=true;recalcBalances();renderAccounts();localStorage.setItem('fin_cache',JSON.stringify({txs:allTxs,accs:allAccs}));toast('Primary updated');}
+function deleteAcc(id){
+  if(!confirm('Delete this account?')) return;
+  allAccs=allAccs.filter(a=>a.id!==id);
+  localStorage.setItem('fin_cache',JSON.stringify({txs:allTxs,accs:allAccs}));
+  renderAccounts();
+  toast('Account deleted');
+}
 
 // ── MODALS ─────────────────────────────────────────────────────────────────
 function openModal(id){document.getElementById(id).classList.add('open');document.body.style.overflow='hidden';}
