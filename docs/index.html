@@ -6,6 +6,12 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Finance">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#b8860b">
+<link rel="apple-touch-icon" href="https://fav.farm/💰">
 <title>Finance</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
@@ -371,6 +377,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--txt);min-
     </div>
     <div class="fg"><div class="fl">Balance (€)</div><input class="fi" type="number" id="aBal" placeholder="0.00" step="0.01"></div>
     <button class="msave" onclick="saveAcc()">Save</button>
+    <div id="accDelBtn" style="display:none"><button class="mdel" onclick="deleteAccFromModal()">Delete account</button></div>
   </div>
 </div>
 
@@ -427,7 +434,7 @@ async function connect(){
 // ── DATA LOADING ──────────────────────────────────────────────────────────
 async function loadData(){
   setSyncStatus('Syncing...','loading');
-  // Always load accounts from their own storage first — never overwrite from API
+  // Load accounts from localStorage first for instant display
   const savedAccs=localStorage.getItem('fin_accounts');
   if(savedAccs){ try{allAccs=JSON.parse(savedAccs);}catch(e){} }
   if(!allAccs||!allAccs.length) allAccs=getDefaultAccs();
@@ -438,7 +445,7 @@ async function loadData(){
     setSyncStatus('Synced ✓','ok');
     document.getElementById('syncCount').textContent=allTxs.length+' records';
     localStorage.setItem('fin_cache',JSON.stringify({txs:allTxs}));
-    saveAccounts();
+    localStorage.setItem('fin_accounts',JSON.stringify(allAccs));
   }catch(e){
     console.error(e);
     setSyncStatus('Error: '+e.message,'err');
@@ -451,6 +458,14 @@ async function loadData(){
 
 function saveAccounts(){
   localStorage.setItem('fin_accounts',JSON.stringify(allAccs));
+  // Also sync to Railway API if connected
+  if(cfg.mode==='api'&&cfg.apiUrl&&cfg.userId){
+    fetch(`${cfg.apiUrl}/api/accounts?user_id=${cfg.userId}`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({accounts:allAccs})
+    }).catch(e=>console.log('Accounts sync error:',e));
+  }
 }
 
 async function loadFromSheet(){
@@ -472,7 +487,17 @@ async function loadFromApi(){
   const data=await resp.json();
   allTxs=(data.transactions||[]).map((r,i)=>normalizeApiRow(r,i))
     .filter(t=>!['budget','template','account'].includes(t.type));
-  // Never overwrite allAccs from API — accounts are managed locally
+  // Load accounts from API — these are the source of truth
+  try{
+    const accResp=await fetch(`${cfg.apiUrl}/api/accounts?user_id=${uid}`);
+    if(accResp.ok){
+      const accData=await accResp.json();
+      if(accData.accounts&&accData.accounts.length>0){
+        allAccs=accData.accounts;
+        localStorage.setItem('fin_accounts',JSON.stringify(allAccs));
+      }
+    }
+  }catch(e){ /* use localStorage accounts */ }
 }
 
 function recalcBalances(){
@@ -707,7 +732,7 @@ function txRow(t){
   const date=new Date(t.date).toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'2-digit'});
   const ico=isTrf?'🔄':catIcon(t.category);
   const name=t.description&&t.description!=='—'?t.description:cleanCatName(t.category);
-  return`<div class="txi" onclick="openTxModal('${t.id}')"><div class="txl"><span class="tx-ico">${ico}</span><div><div class="tx-desc">${name}</div><div class="tx-meta">${date} · ${isTrf?'Transfer':''}${!isTrf?cleanCatName(t.category):''}</div></div></div><div class="txr"><span class="tx-amt" style="${amtStyle}">${sign}${parseFloat(t.amount).toFixed(2)} €</span><button class="tx-del" onclick="event.stopPropagation();quickDel('${t.id}')">×</button></div></div>`;
+  return`<div class="txi" onclick="openTxModal('${t.id}')"><div class="txl"><span class="tx-ico">${ico}</span><div><div class="tx-desc">${name}</div><div class="tx-meta">${date} · ${isTrf?'Transfer':cleanCatName(t.category)}</div></div></div><div class="txr"><span class="tx-amt" style="${amtStyle}">${sign}${parseFloat(t.amount).toFixed(2)} €</span></div></div>`;
 }
 
 function renderTransactions(){
@@ -778,7 +803,7 @@ function renderAccounts(){
   }
   const maxB=Math.max(...allAccs.map(a=>Math.abs(parseFloat(a.balance))),1);
   document.getElementById('accBars').innerHTML=allAccs.map((a,i)=>`<div class="abar"><span class="abar-lbl">${AICONS[a.type]||'💳'} ${a.name}</span><div class="abar-track"><div class="abar-fill" style="width:${Math.max(parseFloat(a.balance),0)/maxB*100}%;background:${COLORS[i%COLORS.length]}"></div></div><span class="abar-val">${parseFloat(a.balance).toFixed(0)} €</span></div>`).join('');
-  document.getElementById('accList').innerHTML=allAccs.map((a,i)=>`<div class="acccard${a.primary?' primary':''}"><div class="acc-top"><div class="acc-left"><span class="acc-ico">${AICONS[a.type]||'💳'}</span><div><div class="acc-name">${a.name}${a.primary?'<span class="acc-badge">Primary</span>':''}</div><div class="acc-type">${a.type}</div></div></div><span class="acc-bal" style="color:${parseFloat(a.balance||0)>=0?'var(--acc)':'var(--red)'}">${parseFloat(a.balance||0).toFixed(2)} €</span></div><div class="acc-btns"><button class="acc-btn" onclick="openAccModal('${a.id}')">Edit</button>${!a.primary?`<button class="acc-btn pri" onclick="setPrimary('${a.id}')">Set primary</button><button class="acc-btn" style="color:var(--red);border-color:var(--red);flex:0;padding:7px 10px" onclick="deleteAcc('${a.id}')">✕</button>`:'<span style="font-size:10px;color:var(--mut);padding:7px;flex:1;text-align:center">Default</span>'}</div></div>`).join('');
+  document.getElementById('accList').innerHTML=allAccs.map((a,i)=>`<div class="acccard${a.primary?' primary':''}"><div class="acc-top"><div class="acc-left"><span class="acc-ico">${AICONS[a.type]||'💳'}</span><div><div class="acc-name">${a.name}${a.primary?'<span class="acc-badge">Primary</span>':''}</div><div class="acc-type">${a.type}</div></div></div><span class="acc-bal" style="color:${parseFloat(a.balance||0)>=0?'var(--acc)':'var(--red)'}">${parseFloat(a.balance||0).toFixed(2)} €</span></div><div class="acc-btns"><button class="acc-btn" onclick="openAccModal('${a.id}')">Edit</button>${!a.primary?`<button class="acc-btn pri" onclick="setPrimary('${a.id}')">Set primary</button>`:'<span style="font-size:10px;color:var(--mut);padding:7px;flex:1;text-align:center">Default</span>'}</div></div>`).join('');
 }
 
 // ── TX MODAL ───────────────────────────────────────────────────────────────
@@ -858,12 +883,23 @@ function openAccModal(id){
     document.getElementById('aName').value=acc.name;
     document.getElementById('aType').value=acc.type;
     document.getElementById('aBal').value=parseFloat(acc.balance||0).toFixed(2);
+    document.getElementById('accDelBtn').style.display=acc.primary?'none':'block';
   } else {
     document.getElementById('accModalTitle').textContent='New account';
     document.getElementById('aName').value='';
     document.getElementById('aBal').value='0';
+    document.getElementById('accDelBtn').style.display='none';
   }
   openModal('accModal');
+}
+function deleteAccFromModal(){
+  if(!editAccId) return;
+  if(!confirm('Delete this account?')) return;
+  allAccs=allAccs.filter(a=>a.id!==editAccId);
+  saveAccounts();
+  closeModal('accModal');
+  renderAccounts();
+  toast('Account deleted');
 }
 function saveAcc(){
   const name=document.getElementById('aName').value.trim();if(!name){toast('Enter a name');return;}

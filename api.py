@@ -330,12 +330,12 @@ def save_accounts_route():
 
 def get_accounts(uid, sheet):
     if not sheet:
-        return get_default_accounts()
+        return []
     try:
         rows = get_all_rows(sheet)
         acc_rows = [r for r in rows if normalize_type(r.get('Type', '')) == 'account']
         if not acc_rows:
-            return get_default_accounts()
+            return []  # return empty so dashboard keeps its own accounts
         return [{
             'id': r['Date'],
             'balance': float(r.get('Amount') or 0),
@@ -344,7 +344,7 @@ def get_accounts(uid, sheet):
             'primary': r.get('Month', '') == 'primary'
         } for r in acc_rows]
     except:
-        return get_default_accounts()
+        return []
 
 def get_default_accounts():
     return [
