@@ -86,18 +86,22 @@ def verify_telegram_data(init_data: str) -> dict | None:
         return None
 
 def get_user_id_from_request():
-    """Extract and verify user ID from request"""
+    """Extract user ID from request — supports Telegram WebApp and direct user_id param"""
+    # Try Telegram WebApp initData first
     init_data = request.headers.get('X-Telegram-Init-Data', '')
+    if init_data:
+        user = verify_telegram_data(init_data)
+        if user:
+            return user.get('id')
     
-    # In development/testing, allow user_id param
-    if not init_data:
-        uid = request.args.get('user_id') or request.json.get('user_id') if request.is_json else None
-        if uid:
-            return int(uid)
-        return None
+    # Allow direct user_id param (for API access and testing)
+    uid = request.args.get('user_id')
+    if not uid and request.is_json:
+        uid = request.json.get('user_id')
+    if uid:
+        return int(uid)
     
-    user = verify_telegram_data(init_data)
-    return user.get('id') if user else None
+    return None
 
 # ── ROUTES ─────────────────────────────────────────────────────────────────────
 @app.route('/health')
