@@ -189,29 +189,22 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--txt);min-
   <div class="setup-card">
     <div class="setup-logo">💰</div>
     <div class="setup-title">Finance Dashboard</div>
-    <div class="setup-sub">Connect your Google Sheet to get started</div>
-    <div class="setup-tabs">
-      <div class="setup-tab on" onclick="switchSetupTab('sheet',this)">Google Sheet</div>
-      <div class="setup-tab" onclick="switchSetupTab('api',this)">Railway API</div>
+    <div class="setup-sub">Введи свой Telegram ID чтобы войти</div>
+
+    <div id="setupAutoMsg" style="display:none;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:12px;margin-bottom:16px;font-size:13px;color:#166534;text-align:center;">
+      ✅ Telegram ID определён автоматически
     </div>
-    <div id="tab-sheet">
-      <div class="setup-label">Google Sheet ID</div>
-      <input class="setup-input" id="sheetId" placeholder="14LNvTVj85QWpfF8bXNr1MniWL..." value="14LNvTVj85QWpfF8bXNr1MniWLSWZOdgITi2WySmXvXE">
-      <div class="setup-label">Sheet tab (gid number or 0 for first tab)</div>
-      <input class="setup-input" id="sheetGid" placeholder="0" value="0">
-      <div class="setup-hint">
-        Share your sheet as <code>Anyone with link → Viewer</code>.<br>
-        Columns: <code>Дата</code>, <code>Сумма (€)</code>, <code>Категория</code>, <code>Тип</code>, <code>Месяц</code>
-      </div>
+
+    <div class="setup-label">Telegram User ID</div>
+    <input class="setup-input" id="userId" placeholder="123456789" type="number">
+    <div class="setup-hint">
+      Не знаешь свой ID? Напиши боту
+      <a href="https://t.me/userinfobot" target="_blank" style="color:var(--acc);font-weight:700;">@userinfobot</a>
+      в Telegram — он пришлёт твой ID.<br><br>
+      Или открой дашборд через кнопку в боте — ID определится автоматически.
     </div>
-    <div id="tab-api" style="display:none">
-      <div class="setup-label">Railway API URL</div>
-      <input class="setup-input" id="apiUrl" placeholder="https://your-app.up.railway.app" value="https://expenses-bot-production.up.railway.app">
-      <div class="setup-label">Your Telegram User ID</div>
-      <input class="setup-input" id="userId" placeholder="123456789">
-      <div class="setup-hint">Get your ID from <code>@userinfobot</code> in Telegram.</div>
-    </div>
-    <button class="setup-btn" onclick="connect()">Connect →</button>
+
+    <button class="setup-btn" onclick="connect()">Войти →</button>
     <div class="setup-err" id="setupErr"></div>
   </div>
 </div>
@@ -400,13 +393,10 @@ let cfg={mode:'sheet',sheetId:'',sheetGid:'0',apiUrl:'',userId:''};
 let setupMode='sheet';
 
 // ── SETUP ──────────────────────────────────────────────────────────────────
-function switchSetupTab(mode,btn){
-  setupMode=mode;
-  document.querySelectorAll('.setup-tab').forEach(t=>t.classList.remove('on'));
-  btn.classList.add('on');
-  document.getElementById('tab-sheet').style.display=mode==='sheet'?'block':'none';
-  document.getElementById('tab-api').style.display=mode==='api'?'block':'none';
-}
+const API_URL = 'https://expenses-bot-production.up.railway.app';
+
+function switchSetupTab(mode,btn){} // kept for compatibility
+
 function openSetup(){
   document.getElementById('app').style.display='none';
   document.getElementById('setup').style.display='flex';
@@ -414,17 +404,9 @@ function openSetup(){
 async function connect(){
   const err=document.getElementById('setupErr');
   err.style.display='none';
-  if(setupMode==='sheet'){
-    const sid=document.getElementById('sheetId').value.trim();
-    const gid=document.getElementById('sheetGid').value.trim();
-    if(!sid){err.textContent='Please enter a Sheet ID';err.style.display='block';return;}
-    cfg={mode:'sheet',sheetId:sid,sheetGid:gid||'0'};
-  } else {
-    const api=document.getElementById('apiUrl').value.trim().replace(/\/$/,'');
-    const uid=document.getElementById('userId').value.trim();
-    if(!api){err.textContent='Please enter the API URL';err.style.display='block';return;}
-    cfg={mode:'api',apiUrl:api,userId:uid};
-  }
+  const uid=document.getElementById('userId').value.trim();
+  if(!uid){err.textContent='Введи Telegram ID';err.style.display='block';return;}
+  cfg={mode:'api',apiUrl:API_URL,userId:uid};
   localStorage.setItem('fin_cfg',JSON.stringify(cfg));
   document.getElementById('setup').style.display='none';
   document.getElementById('app').style.display='block';
@@ -929,14 +911,45 @@ function closeModal(id){document.getElementById(id).classList.remove('open');doc
 document.querySelectorAll('.modal-bg').forEach(bg=>{bg.addEventListener('click',e=>{if(e.target===bg)closeModal(bg.id);});});
 
 // ── INIT ───────────────────────────────────────────────────────────────────
+
+// Try to get Telegram ID automatically from WebApp
+function getTelegramId(){
+  try{
+    if(window.Telegram&&window.Telegram.WebApp){
+      window.Telegram.WebApp.ready();
+      window.Telegram.WebApp.expand();
+      const uid=window.Telegram.WebApp.initDataUnsafe?.user?.id;
+      if(uid) return String(uid);
+    }
+  }catch(e){}
+  return null;
+}
+
+const _tgId=getTelegramId();
 const _savedCfg=localStorage.getItem('fin_cfg');
-if(_savedCfg){
+
+if(_tgId){
+  // Auto-login via Telegram WebApp
+  cfg={mode:'api',apiUrl:API_URL,userId:_tgId};
+  localStorage.setItem('fin_cfg',JSON.stringify(cfg));
+  document.getElementById('setup').style.display='none';
+  document.getElementById('app').style.display='block';
+  const _c=localStorage.getItem('fin_cache');
+  if(_c){try{const d=JSON.parse(_c);allTxs=d.txs||[];}catch(e){}}
+  const _a=localStorage.getItem('fin_accounts');
+  if(_a){try{allAccs=JSON.parse(_a);}catch(e){allAccs=getDefaultAccs();}}
+  else allAccs=getDefaultAccs();
+  updateMonthLabel();renderChips();renderAll();
+  setSyncStatus('Loading...','loading');
+  setTimeout(loadData,300);
+} else if(_savedCfg){
+  // Previously logged in
   try{
     cfg=JSON.parse(_savedCfg);
+    cfg.apiUrl=API_URL; // always use latest API URL
     document.getElementById('setup').style.display='none';
     document.getElementById('app').style.display='block';
-    if(cfg.mode==='sheet'){document.getElementById('sheetId').value=cfg.sheetId||'';document.getElementById('sheetGid').value=cfg.sheetGid||'0';}
-    else{document.getElementById('apiUrl').value=cfg.apiUrl||'';document.getElementById('userId').value=cfg.userId||'';switchSetupTab('api',document.querySelectorAll('.setup-tab')[1]);}
+    document.getElementById('userId').value=cfg.userId||'';
     const _c=localStorage.getItem('fin_cache');
     if(_c){try{const d=JSON.parse(_c);allTxs=d.txs||[];}catch(e){}}
     const _a=localStorage.getItem('fin_accounts');
@@ -947,8 +960,11 @@ if(_savedCfg){
     setTimeout(loadData,300);
   }catch(e){}
 } else {
-  document.getElementById('sheetId').value='14LNvTVj85QWpfF8bXNr1MniWLSWZOdgITi2WySmXvXE';
+  // New user — show setup, try to pre-fill ID hint
+  const autoMsg=document.getElementById('setupAutoMsg');
+  if(autoMsg) autoMsg.style.display='none';
 }
+
 updateMonthLabel();
 renderChips();
 </script>
