@@ -1,174 +1,493 @@
 """
-Телеграм-бот для учёта расходов с Mini App
+Finance Bot v3 — Multi-user with Google Sheets
+Each user gets their own sheet tab named by their Telegram user ID.
+Data is fully isolated between users.
 """
 
-import os, re, csv
-from datetime import datetime
+import os, re, csv, io, logging
+from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-TELEGRAM_TOKEN = "8698682076:AAGa2VWg3MN0IdJcQ64Rtuegg4Mt9GvvCYE"
-WEBAPP_URL = os.getenv("WEBAPP_URL", "")
-LOCAL_CSV = "expenses.csv"
-ALLOWED_USER_ID = 0
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-CATEGORIES = [
-    "🛒 Продукты","🏠 Квартплата","🚌 Транспорт","📱 Связь/Подписки",
-    "🍽 Рестораны/Кафе","👕 Одежда","💊 Медицина","🎮 Развлечения",
-    "🏋 Спорт","✈️ Путешествия","📚 Учёба","🔧 Быт","💰 Инвестиции","📦 Другое",
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8698682076:AAGa2VWg3MN0IdJcQ64Rtuegg4Mt9GvvCYE")
+WEBAPP_URL = os.getenv("WEBAPP_URL", "")
+GOOGLE_CREDS_FILE = os.getenv("GOOGLE_CREDS_FILE", "google_creds.json")
+SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "Finance Bot Data")
+
+EXPENSE_CATS = [
+    "🛒 Groceries","🏠 Rent","🚌 Transport","📱 Subscriptions","🍽 Dining",
+    "👕 Clothing","💊 Health","🎮 Entertainment","🏋 Sports","✈️ Travel",
+    "📚 Education","🔧 Home","💰 Investments","📦 Other"
 ]
+INCOME_CATS = ["💼 Salary","🖥 Freelance","📈 Dividends","🎁 Gift","🏠 Rental income","💡 Other income"]
+HEADERS = ["Date","Amount","Category","Description","Type","Month","UserID"]
 
 pending = {}
 
-def ensure_csv():
-    if not os.path.exists(LOCAL_CSV):
-        with open(LOCAL_CSV, "w", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow(["Дата","Сумма","Категория","Описание","Тип","Месяц"])
+# ─── GOOGLE SHEETS ─────────────────────────────────────────────────────────────
+_gs_client = None
+_spreadsheet = None
 
-def read_csv():
-    ensure_csv()
-    with open(LOCAL_CSV, "r", encoding="utf-8") as f:
+def get_spreadsheet():
+    global _gs_client, _spreadsheet
+    if _spreadsheet:
+        return _spreadsheet
+    try:
+        import gspread, json
+        from google.oauth2.service_account import Credentials
+        scopes = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
+        # Try env variable first, then file
+        creds_json = os.getenv("GOOGLE_CREDS_JSON")
+        if creds_json:
+            creds_info = json.loads(creds_json)
+            creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+        elif os.path.exists(GOOGLE_CREDS_FILE):
+            creds = Credentials.from_service_account_file(GOOGLE_CREDS_FILE, scopes=scopes)
+        else:
+            logger.warning("No Google credentials found")
+            return None
+        _gs_client = gspread.authorize(creds)
+        _spreadsheet = _gs_client.open(SPREADSHEET_NAME)
+        return _spreadsheet
+    except Exception as e:
+        logger.error(f"Google Sheets error: {e}")
+        return None
+
+def get_user_sheet(user_id: int):
+    """Get or create a sheet tab for this user."""
+    sp = get_spreadsheet()
+    if not sp:
+        return None
+    sheet_name = f"user_{user_id}"
+    try:
+        sheet = sp.worksheet(sheet_name)
+    except Exception:
+        try:
+            import gspread
+            sheet = sp.add_worksheet(title=sheet_name, rows=5000, cols=8)
+            sheet.append_row(HEADERS)
+        except Exception as e:
+            logger.error(f"Create sheet error: {e}")
+            return None
+    return sheet
+
+def read_user_tx(user_id: int):
+    sheet = get_user_sheet(user_id)
+    if not sheet:
+        return []
+    try:
+        return sheet.get_all_records()
+    except Exception as e:
+        logger.error(f"Read error: {e}")
+        return []
+
+def write_user_tx(user_id: int, date, amount, category, description, tx_type):
+    sheet = get_user_sheet(user_id)
+    if not sheet:
+        logger.warning(f"No sheet for user {user_id}, using local fallback")
+        _write_local(user_id, date, amount, category, description, tx_type)
+        return
+    try:
+        sheet.append_row([
+            date.strftime("%d.%m.%Y"), amount, category,
+            description, tx_type, date.strftime("%Y-%m"), str(user_id)
+        ])
+    except Exception as e:
+        logger.error(f"Write error: {e}")
+        _write_local(user_id, date, amount, category, description, tx_type)
+
+# ─── LOCAL FALLBACK (if no Google Sheets) ─────────────────────────────────────
+def _local_path(user_id): return f"/tmp/{user_id}.csv"
+
+def _ensure_local(user_id):
+    p = _local_path(user_id)
+    if not os.path.exists(p):
+        with open(p,"w",newline="",encoding="utf-8") as f:
+            csv.writer(f).writerow(HEADERS)
+
+def _write_local(user_id, date, amount, category, description, tx_type):
+    _ensure_local(user_id)
+    with open(_local_path(user_id),"a",newline="",encoding="utf-8") as f:
+        csv.writer(f).writerow([date.strftime("%d.%m.%Y"),amount,category,description,tx_type,date.strftime("%Y-%m"),str(user_id)])
+
+def _read_local(user_id):
+    _ensure_local(user_id)
+    with open(_local_path(user_id),"r",encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
-def write_csv(date, amount, category, description, tx_type):
-    ensure_csv()
-    with open(LOCAL_CSV, "a", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow([date.strftime("%d.%m.%Y"), amount, category, description, tx_type, date.strftime("%Y-%m")])
+def get_tx(user_id):
+    """Read from Google Sheets or local fallback."""
+    rows = read_user_tx(user_id)
+    if not rows:
+        rows = _read_local(user_id)
+    return rows
 
-def is_allowed(update: Update) -> bool:
-    return ALLOWED_USER_ID == 0 or update.effective_user.id == ALLOWED_USER_ID
+# ─── STATS ─────────────────────────────────────────────────────────────────────
+def get_month_stats(user_id, month):
+    rows = get_tx(user_id)
+    txs = [r for r in rows if r.get("Month") == month]
+    exp = sum(float(r["Amount"]) for r in txs if r["Type"] == "expense")
+    inc = sum(float(r["Amount"]) for r in txs if r["Type"] == "income")
+    by_cat = {}
+    for r in txs:
+        if r["Type"] == "expense":
+            by_cat[r["Category"]] = by_cat.get(r["Category"],0) + float(r["Amount"])
+    return exp, inc, by_cat
 
-def category_keyboard():
+# ─── HELPERS ──────────────────────────────────────────────────────────────────
+def cat_keyboard(tx_type="expense"):
+    cats = EXPENSE_CATS if tx_type=="expense" else INCOME_CATS
     buttons, row = [], []
-    for cat in CATEGORIES:
+    for cat in cats:
         row.append(InlineKeyboardButton(cat, callback_data=f"cat:{cat}"))
-        if len(row) == 2:
-            buttons.append(row)
-            row = []
+        if len(row)==2: buttons.append(row); row=[]
     if row: buttons.append(row)
-    buttons.append([InlineKeyboardButton("❌ Отмена", callback_data="cat:cancel")])
+    buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="cat:cancel")])
     return InlineKeyboardMarkup(buttons)
 
 def main_keyboard():
     buttons = []
     if WEBAPP_URL:
-        buttons.append([InlineKeyboardButton("📊 Открыть дашборд", web_app=WebAppInfo(url=WEBAPP_URL))])
+        buttons.append([InlineKeyboardButton("📊 Open Dashboard", web_app=WebAppInfo(url=WEBAPP_URL))])
     buttons.append([
         InlineKeyboardButton("📋 /stats", callback_data="cmd:stats"),
-        InlineKeyboardButton("📝 /last", callback_data="cmd:last"),
+        InlineKeyboardButton("📈 /compare", callback_data="cmd:compare"),
+    ])
+    buttons.append([
+        InlineKeyboardButton("📤 /export", callback_data="cmd:export"),
+        InlineKeyboardButton("❓ /help", callback_data="cmd:help"),
     ])
     return InlineKeyboardMarkup(buttons)
 
+# ─── COMMANDS ─────────────────────────────────────────────────────────────────
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update): return
+    uid = update.effective_user.id
+    name = update.effective_user.first_name or "there"
+    # Create their sheet on first use
+    sheet = get_user_sheet(uid)
+    storage = "Google Sheets ✅" if sheet else "local storage ⚠️"
     await update.message.reply_text(
-        "👋 *Бот учёта расходов*\n\n"
-        "Напиши трату:\n`кофе 4.5` или `продукты 47`\n\n"
-        "Доход с плюсом:\n`зарплата +3411`\n\n"
-        "/stats — статистика\n/last — последние записи",
+        f"👋 Hi {name}! Welcome to *Finance Bot*\n\n"
+        f"Your data storage: {storage}\n"
+        f"Your data is *private* — only you can see it.\n\n"
+        "📝 *How to add transactions:*\n"
+        "`coffee 4.5` — expense\n"
+        "`salary +3411` — income\n"
+        "`coffee 4.5 25.05` — with custom date\n\n"
+        "📋 *Commands:*\n"
+        "/stats — monthly breakdown\n"
+        "/compare — vs last month\n"
+        "/export — download your data as CSV\n"
+        "/find coffee — search transactions\n"
+        "/last — last 10 transactions\n"
+        "/addq coffee 4.5 Dining — save quick template\n"
+        "/q coffee — use quick template\n"
+        "/budget Groceries 400 — set spending limit\n"
+        "/deletedata — delete all your data\n\n"
+        "Your data belongs to you and is never shared.",
         parse_mode="Markdown",
         reply_markup=main_keyboard()
     )
 
+async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.message or (update.callback_query.message if update.callback_query else None)
+    if msg:
+        await msg.reply_text(
+            "📖 *Finance Bot Help*\n\n"
+            "*Adding transactions:*\n"
+            "`coffee 4.5` → expense\n"
+            "`salary +3411` → income\n"
+            "`coffee 4.5 25.05` → with date\n\n"
+            "*Commands:*\n"
+            "/stats `[YYYY-MM]` — monthly stats\n"
+            "/compare — this month vs last month\n"
+            "/export — download CSV\n"
+            "/find `query` — search\n"
+            "/last — last 10 transactions\n"
+            "/addq `name amount category` — save template\n"
+            "/q `name` — use template\n"
+            "/budget `category limit` — set budget\n"
+            "/deletedata — delete all your data\n\n"
+            "*Privacy:*\n"
+            "Your data is stored in a private sheet tab.\n"
+            "No other user can access it.",
+            parse_mode="Markdown"
+        )
+
 async def stats_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update): return
+    uid = update.effective_user.id
     month = ctx.args[0] if ctx.args else datetime.now().strftime("%Y-%m")
-    rows = read_csv()
-    expenses = [r for r in rows if r.get("Месяц") == month and r.get("Тип") == "расход"]
-    income = [r for r in rows if r.get("Месяц") == month and r.get("Тип") == "доход"]
-    by_cat, total_exp = {}, 0
-    for r in expenses:
-        amt = float(r["Сумма"] or 0)
-        by_cat[r["Категория"]] = by_cat.get(r["Категория"], 0) + amt
-        total_exp += amt
-    total_inc = sum(float(r["Сумма"] or 0) for r in income)
-    lines = [f"📊 *Статистика за {month}*\n"]
+    exp, inc, by_cat = get_month_stats(uid, month)
+    lines = [f"📊 *Stats for {month}*\n"]
     if by_cat:
         for cat, amt in sorted(by_cat.items(), key=lambda x: x[1], reverse=True):
-            lines.append(f"{cat}: *{amt:.2f} €* {'▓' * min(int(amt/50), 10)}")
+            bar = "▓" * min(int(amt/50),8)
+            lines.append(f"{cat}: *{amt:.2f}€* {bar}")
     else:
-        lines.append("_Нет расходов_")
-    lines.append(f"\n💸 Расходы: *{total_exp:.2f} €*")
-    if total_inc > 0:
-        lines.append(f"💚 Доходы: *{total_inc:.2f} €*")
-        lines.append(f"📈 Остаток: *{total_inc - total_exp:.2f} €*")
+        lines.append("_No expenses yet_")
+    lines.append(f"\n💸 Total expenses: *{exp:.2f}€*")
+    if inc > 0:
+        lines.append(f"💚 Total income: *{inc:.2f}€*")
+        lines.append(f"📈 Balance: *{inc-exp:.2f}€*")
     msg = update.message or (update.callback_query.message if update.callback_query else None)
     if msg: await msg.reply_text("\n".join(lines), parse_mode="Markdown")
 
-async def last_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update): return
-    rows = read_csv()
-    last5 = list(reversed(rows[-5:])) if rows else []
-    if not last5:
-        await update.message.reply_text("Записей пока нет.")
+async def compare_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    now = datetime.now()
+    cur = now.strftime("%Y-%m")
+    prev = (now.replace(day=1)-timedelta(days=1)).strftime("%Y-%m")
+    exp_c,inc_c,by_c = get_month_stats(uid, cur)
+    exp_p,inc_p,by_p = get_month_stats(uid, prev)
+    diff = exp_c - exp_p
+    sign = "+" if diff>=0 else ""
+    pct = (diff/exp_p*100) if exp_p>0 else 0
+    lines = [f"📊 *{cur} vs {prev}*\n"]
+    lines.append(f"Expenses: *{exp_c:.2f}€* vs {exp_p:.2f}€ ({sign}{diff:.2f}€, {sign}{pct:.0f}%)")
+    lines.append(f"Income: *{inc_c:.2f}€* vs {inc_p:.2f}€\n")
+    all_cats = set(list(by_c.keys())+list(by_p.keys()))
+    for cat in sorted(all_cats, key=lambda c: by_c.get(c,0), reverse=True)[:6]:
+        c=by_c.get(cat,0); p=by_p.get(cat,0); d=c-p
+        arrow="↑" if d>0 else ("↓" if d<0 else "→")
+        lines.append(f"{cat}: {c:.0f}€ {arrow} ({'+' if d>=0 else ''}{d:.0f}€)")
+    msg = update.message or (update.callback_query.message if update.callback_query else None)
+    if msg: await msg.reply_text("\n".join(lines), parse_mode="Markdown")
+
+async def export_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    rows = get_tx(uid)
+    msg = update.message or (update.callback_query.message if update.callback_query else None)
+    if not rows:
+        if msg: await msg.reply_text("No transactions to export yet.")
         return
-    lines = ["📋 *Последние записи:*\n"]
-    for r in last5:
-        sign = "+" if r.get("Тип") == "доход" else "-"
-        lines.append(f"{r['Дата']} | {sign}{r['Сумма']} € | {r['Категория']} | {r['Описание']}")
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=HEADERS)
+    writer.writeheader()
+    writer.writerows(rows)
+    output.seek(0)
+    filename = f"my_finances_{datetime.now().strftime('%Y%m')}.csv"
+    if msg:
+        await msg.reply_document(
+            document=io.BytesIO(output.getvalue().encode("utf-8")),
+            filename=filename,
+            caption=f"📤 Your transactions — {len(rows)} records\n_Only you received this file._",
+            parse_mode="Markdown"
+        )
+
+async def find_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not ctx.args:
+        await update.message.reply_text("Usage: `/find coffee`", parse_mode="Markdown")
+        return
+    query = " ".join(ctx.args).lower()
+    rows = get_tx(uid)
+    found = [r for r in rows if query in r.get("Description","").lower() or query in r.get("Category","").lower()]
+    if not found:
+        await update.message.reply_text(f"Nothing found for «{query}»")
+        return
+    found = list(reversed(found[-10:]))
+    lines = [f"🔍 *Results for «{query}»*\n"]
+    for r in found:
+        sign = "+" if r["Type"]=="income" else "-"
+        lines.append(f"{r['Date']} | {sign}{r['Amount']}€ | {r['Category']} | {r['Description']}")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
+async def last_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    rows = get_tx(uid)
+    last = list(reversed(rows[-10:])) if rows else []
+    if not last:
+        await update.message.reply_text("No transactions yet.")
+        return
+    lines = ["📋 *Last 10 transactions:*\n"]
+    for r in last:
+        sign = "+" if r["Type"]=="income" else "-"
+        lines.append(f"{r['Date']} | {sign}{r['Amount']}€ | {r['Category']} | {r['Description']}")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+async def budget_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if ctx.args and len(ctx.args)>=2:
+        cat_q = " ".join(ctx.args[:-1]).lower()
+        try:
+            limit = float(ctx.args[-1])
+            matched = next((c for c in EXPENSE_CATS if cat_q in c.lower()), " ".join(ctx.args[:-1]))
+            # Store budget as special row
+            write_user_tx(uid, datetime.now(), limit, matched, "__budget__", "budget")
+            await update.message.reply_text(f"✅ Budget set: *{matched}* → {limit:.2f}€/month", parse_mode="Markdown")
+            return
+        except: pass
+    month = datetime.now().strftime("%Y-%m")
+    _, _, by_cat = get_month_stats(uid, month)
+    rows = get_tx(uid)
+    budgets = {r["Category"]: float(r["Amount"]) for r in rows if r.get("Type")=="budget"}
+    if not budgets:
+        await update.message.reply_text("No budgets set.\nUse: `/budget Groceries 400`", parse_mode="Markdown")
+        return
+    lines = ["🎯 *Monthly Budgets*\n"]
+    for cat, lim in budgets.items():
+        spent = by_cat.get(cat,0)
+        pct = spent/lim*100 if lim>0 else 0
+        bar = "█"*int(pct/10)+"░"*(10-int(pct/10))
+        status = "🔴" if pct>=100 else ("🟡" if pct>=80 else "🟢")
+        lines.append(f"{status} {cat}\n`{bar}` {pct:.0f}%\n{spent:.2f}€ / {lim:.2f}€\n")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+async def addq_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not ctx.args or len(ctx.args)<3:
+        await update.message.reply_text("Usage: `/addq coffee 4.50 Dining`", parse_mode="Markdown")
+        return
+    name = ctx.args[0].lower()
+    try: amount = float(ctx.args[1])
+    except: await update.message.reply_text("Invalid amount."); return
+    cat_q = " ".join(ctx.args[2:]).lower()
+    cat = next((c for c in EXPENSE_CATS+INCOME_CATS if cat_q in c.lower()), " ".join(ctx.args[2:]))
+    write_user_tx(uid, datetime.now(), amount, cat, f"__template__{name}", "template")
+    await update.message.reply_text(f"✅ Template saved: `{name}` = {amount:.2f}€ ({cat})", parse_mode="Markdown")
+
+async def q_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    rows = get_tx(uid)
+    templates = {r["Description"].replace("__template__",""): {"amount":float(r["Amount"]),"category":r["Category"]} for r in rows if r.get("Type")=="template"}
+    if not ctx.args:
+        if not templates:
+            await update.message.reply_text("No templates. Use `/addq coffee 4.50 Dining`", parse_mode="Markdown")
+            return
+        lines = ["⚡ *Quick Templates:*\n"]
+        for name,v in templates.items():
+            lines.append(f"`/q {name}` — {v['amount']:.2f}€ ({v['category']})")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        return
+    name = ctx.args[0].lower()
+    if name not in templates:
+        await update.message.reply_text(f"Template `{name}` not found.", parse_mode="Markdown")
+        return
+    t = templates[name]
+    write_user_tx(uid, datetime.now(), t["amount"], t["category"], name, "expense")
+    await update.message.reply_text(f"⚡ *Quick add:* -{t['amount']:.2f}€ ({t['category']})", parse_mode="Markdown")
+
+async def deletedata_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Yes, delete everything", callback_data="deleteconfirm:yes"),
+        InlineKeyboardButton("❌ Cancel", callback_data="deleteconfirm:no"),
+    ]])
+    await update.message.reply_text(
+        "⚠️ *Are you sure?*\n\nThis will permanently delete ALL your transactions and data. This cannot be undone.",
+        parse_mode="Markdown", reply_markup=keyboard
+    )
+
+# ─── MESSAGE HANDLER ──────────────────────────────────────────────────────────
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update): return
     text = update.message.text.strip()
-    user_id = update.effective_user.id
+    uid = update.effective_user.id
+    date_pattern = r"(\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?)"
+    custom_date = None
+    date_match = re.search(date_pattern, text)
+    if date_match:
+        date_str = date_match.group(1).replace("/",".")
+        text_nd = text.replace(date_match.group(1),"").strip()
+        try:
+            parts = date_str.split(".")
+            if len(parts)==2:
+                custom_date = datetime.now().replace(day=int(parts[0]),month=int(parts[1]))
+            elif len(parts)==3:
+                y=int(parts[2]); y=y+2000 if y<100 else y
+                custom_date = datetime(y,int(parts[1]),int(parts[0]))
+            if custom_date: text=text_nd
+        except: custom_date=None
     pattern = r"^([+]?\d+(?:[.,]\d+)?)\s+(.+)$|^(.+?)\s+([+]?\d+(?:[.,]\d+)?)$|^([+]?\d+(?:[.,]\d+)?)$"
     match = re.match(pattern, text, re.IGNORECASE)
     if not match:
-        await update.message.reply_text("Не понял 🤔 Напиши: `кофе 4.50`", parse_mode="Markdown")
+        await update.message.reply_text("Didn't understand 🤔 Try: `coffee 4.50` or `salary +3411`", parse_mode="Markdown")
         return
     g = match.groups()
-    if g[0] and g[1]: raw_amount, description = g[0], g[1]
-    elif g[2] and g[3]: description, raw_amount = g[2], g[3]
-    else: raw_amount, description = g[4], "—"
-    raw_amount = raw_amount.replace(",", ".")
-    is_income = raw_amount.startswith("+")
-    amount = float(raw_amount.lstrip("+"))
-    tx_type = "доход" if is_income else "расход"
-    pending[user_id] = {"amount": amount, "description": description, "type": tx_type}
-    sign = "+" if is_income else "-"
+    if g[0] and g[1]: raw,desc=g[0],g[1]
+    elif g[2] and g[3]: desc,raw=g[2],g[3]
+    else: raw,desc=g[4],"—"
+    raw=raw.replace(",",".")
+    is_income=raw.startswith("+")
+    amount=float(raw.lstrip("+"))
+    tx_type="income" if is_income else "expense"
+    pending[uid]={"amount":amount,"description":desc,"type":tx_type,"date":custom_date or datetime.now()}
+    sign="+" if is_income else "-"
+    date_info=f" ({custom_date.strftime('%d.%m.%Y')})" if custom_date else ""
     await update.message.reply_text(
-        f"{'💚' if is_income else '💸'} *{sign}{amount:.2f} €* — {description}\n\nВыбери категорию:",
-        reply_markup=category_keyboard(), parse_mode="Markdown"
+        f"{'💚' if is_income else '💸'} *{sign}{amount:.2f}€* — {desc}{date_info}\n\nChoose category:",
+        reply_markup=cat_keyboard(tx_type), parse_mode="Markdown"
     )
 
+# ─── CALLBACK ─────────────────────────────────────────────────────────────────
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
+    uid = query.from_user.id
 
     if query.data.startswith("cmd:"):
         cmd = query.data.split(":")[1]
-        if cmd == "stats": await stats_cmd(update, ctx)
+        if cmd=="stats": await stats_cmd(update,ctx)
+        elif cmd=="compare": await compare_cmd(update,ctx)
+        elif cmd=="export": await export_cmd(update,ctx)
+        elif cmd=="help": await help_cmd(update,ctx)
         return
 
-    if query.data == "cat:cancel":
-        pending.pop(user_id, None)
-        await query.edit_message_text("❌ Отменено.")
+    if query.data.startswith("deleteconfirm:"):
+        ans = query.data.split(":")[1]
+        if ans=="yes":
+            sheet = get_user_sheet(uid)
+            if sheet:
+                try:
+                    sp = get_spreadsheet()
+                    sp.del_worksheet(sheet)
+                except: pass
+            try:
+                import os as _os
+                _os.remove(f"/tmp/{uid}.csv")
+            except: pass
+            await query.edit_message_text("✅ All your data has been deleted.")
+        else:
+            await query.edit_message_text("❌ Cancelled. Your data is safe.")
         return
 
-    category = query.data.replace("cat:", "")
-    info = pending.pop(user_id, None)
+    if query.data=="cat:cancel":
+        pending.pop(uid,None)
+        await query.edit_message_text("❌ Cancelled.")
+        return
+
+    category = query.data.replace("cat:","")
+    info = pending.pop(uid,None)
     if not info:
-        await query.edit_message_text("Попробуй ещё раз.")
+        await query.edit_message_text("Something went wrong, try again.")
         return
-    write_csv(datetime.now(), info["amount"], category, info["description"], info["type"])
-    sign = "+" if info["type"] == "доход" else "-"
+    write_user_tx(uid, info["date"], info["amount"], category, info["description"], info["type"])
+    sign="+" if info["type"]=="income" else "-"
     await query.edit_message_text(
-        f"✅ Записано!\n*{sign}{info['amount']:.2f} €* — {info['description']}\n"
-        f"Категория: {category}\nДата: {datetime.now().strftime('%d.%m.%Y %H:%M')}",
+        f"✅ Saved!\n*{sign}{info['amount']:.2f}€* — {info['description']}\n"
+        f"Category: {category}\nDate: {info['date'].strftime('%d.%m.%Y %H:%M')}",
         parse_mode="Markdown"
     )
 
+# ─── MAIN ─────────────────────────────────────────────────────────────────────
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", start))
+    app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
+    app.add_handler(CommandHandler("compare", compare_cmd))
+    app.add_handler(CommandHandler("export", export_cmd))
+    app.add_handler(CommandHandler("find", find_cmd))
     app.add_handler(CommandHandler("last", last_cmd))
+    app.add_handler(CommandHandler("budget", budget_cmd))
+    app.add_handler(CommandHandler("addq", addq_cmd))
+    app.add_handler(CommandHandler("q", q_cmd))
+    app.add_handler(CommandHandler("deletedata", deletedata_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🤖 Бот запущен!")
+    print("🤖 Finance Bot v3 — Multi-user mode started!")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
