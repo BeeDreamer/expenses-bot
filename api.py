@@ -252,12 +252,43 @@ def delete_transaction(tx_id):
     if not sheet:
         return jsonify({'error': 'Storage unavailable'}), 500
 
+    # tx_id format: "date|amount|description" e.g. "01.06.2026|5.0|Coffee"
+    # Fall back to matching row[0] == tx_id for legacy calls
     try:
+        parts = tx_id.split('|')
+        match_date = parts[0] if len(parts) > 0 else None
+        match_amount = parts[1] if len(parts) > 1 else None
+        match_desc = parts[2] if len(parts) > 2 else None
+
         rows = sheet.get_all_values()
+        headers = [h.lower().strip() for h in (rows[0] if rows else [])]
+
+        # find column indices
+        date_col = next((i for i,h in enumerate(headers) if 'дата' in h or h=='date'), 0)
+        amt_col = next((i for i,h in enumerate(headers) if 'сумма' in h or h=='amount'), 1)
+        desc_col = next((i for i,h in enumerate(headers) if 'описан' in h or h=='description'), 3)
+
         for i, row in enumerate(rows[1:], 2):
-            if row and row[0] == tx_id:
+            if not row: continue
+            # try compound key match first
+            if match_date and match_amount:
+                row_date = row[date_col] if len(row) > date_col else ''
+                row_amt = str(row[amt_col]) if len(row) > amt_col else ''
+                row_desc = row[desc_col] if len(row) > desc_col else ''
+                # normalize amount for comparison
+                try:
+                    amt_match = abs(float(row_amt) - float(match_amount)) < 0.01
+                except:
+                    amt_match = row_amt == match_amount
+                if row_date == match_date and amt_match:
+                    if not match_desc or match_desc == '—' or row_desc == match_desc or match_desc == '':
+                        sheet.delete_rows(i)
+                        return jsonify({'success': True})
+            # legacy: match by first column
+            elif row[0] == tx_id:
                 sheet.delete_rows(i)
                 return jsonify({'success': True})
+
         return jsonify({'error': 'Not found'}), 404
     except Exception as e:
         return jsonify({'error': str(e)}), 500
