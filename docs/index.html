@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>Finance</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
@@ -425,19 +428,30 @@ async function connect(){
 // ── DATA LOADING ──────────────────────────────────────────────────────────
 async function loadData(){
   setSyncStatus('Syncing...','loading');
+  // Always load accounts from their own storage first — never overwrite from API
+  const savedAccs=localStorage.getItem('fin_accounts');
+  if(savedAccs){ try{allAccs=JSON.parse(savedAccs);}catch(e){} }
+  if(!allAccs||!allAccs.length) allAccs=getDefaultAccs();
+
   try{
     if(cfg.mode==='sheet') await loadFromSheet();
     else await loadFromApi();
     setSyncStatus('Synced ✓','ok');
     document.getElementById('syncCount').textContent=allTxs.length+' records';
-    localStorage.setItem('fin_cache',JSON.stringify({txs:allTxs,accs:allAccs}));
+    localStorage.setItem('fin_cache',JSON.stringify({txs:allTxs}));
+    saveAccounts();
   }catch(e){
     console.error(e);
     setSyncStatus('Error: '+e.message,'err');
     const c=localStorage.getItem('fin_cache');
-    if(c){const d=JSON.parse(c);allTxs=d.txs||[];allAccs=d.accs||getDefaultAccs();}
+    if(c){try{const d=JSON.parse(c);allTxs=d.txs||[];}catch(e2){}}
   }
+  recalcBalances();
   renderAll();
+}
+
+function saveAccounts(){
+  localStorage.setItem('fin_accounts',JSON.stringify(allAccs));
 }
 
 async function loadFromSheet(){
@@ -459,8 +473,7 @@ async function loadFromApi(){
   const data=await resp.json();
   allTxs=(data.transactions||[]).map((r,i)=>normalizeApiRow(r,i))
     .filter(t=>!['budget','template','account'].includes(t.type));
-  if(data.accounts&&data.accounts.length>0) allAccs=data.accounts;
-  recalcBalances();
+  // Never overwrite allAccs from API — accounts are managed locally
 }
 
 function recalcBalances(){
@@ -546,7 +559,8 @@ async function quickAdd(){
     const toAcc=allAccs.find(a=>a.id===toAccId);
     if(!toAcc){toast('Select target account');return;}
     allTxs.push({id:'local_'+Date.now(),type:'transfer',amount:amt,category:'Investments',description:desc||'→ '+toAcc.name,date:now2.toISOString(),month,account:toAcc.name,accountId:toAccId,_local:true});
-    toAcc.balance=parseFloat(toAcc.balance)+amt;
+    recalcBalances();
+    saveAccounts();
     toast('Transfer recorded ✓');
   } else {
     const cat=selCat||(qType==='expense'?ECATS[0]:ICATS[0]);
@@ -563,7 +577,7 @@ async function quickAdd(){
   document.getElementById('qAmt').value='';
   document.getElementById('qDesc').value='';
   selCat=null;renderChips();
-  localStorage.setItem('fin_cache',JSON.stringify({txs:allTxs,accs:allAccs}));
+  localStorage.setItem('fin_cache',JSON.stringify({txs:allTxs}));
   renderAll();
 }
 
@@ -866,14 +880,14 @@ function saveAcc(){
   }
   recalcBalances();
   closeModal('accModal');renderAll();
-  localStorage.setItem('fin_cache',JSON.stringify({txs:allTxs,accs:allAccs}));
+  saveAccounts();
   toast('Account saved');
 }
-function setPrimary(id){allAccs.forEach(a=>delete a.primary);const acc=allAccs.find(a=>a.id===id);if(acc)acc.primary=true;recalcBalances();renderAccounts();localStorage.setItem('fin_cache',JSON.stringify({txs:allTxs,accs:allAccs}));toast('Primary updated');}
+function setPrimary(id){allAccs.forEach(a=>delete a.primary);const acc=allAccs.find(a=>a.id===id);if(acc)acc.primary=true;recalcBalances();renderAccounts();saveAccounts();toast('Primary updated');}
 function deleteAcc(id){
   if(!confirm('Delete this account?')) return;
   allAccs=allAccs.filter(a=>a.id!==id);
-  localStorage.setItem('fin_cache',JSON.stringify({txs:allTxs,accs:allAccs}));
+  saveAccounts();
   renderAccounts();
   toast('Account deleted');
 }
@@ -893,7 +907,9 @@ if(_savedCfg){
     if(cfg.mode==='sheet'){document.getElementById('sheetId').value=cfg.sheetId||'';document.getElementById('sheetGid').value=cfg.sheetGid||'0';}
     else{document.getElementById('apiUrl').value=cfg.apiUrl||'';document.getElementById('userId').value=cfg.userId||'';switchSetupTab('api',document.querySelectorAll('.setup-tab')[1]);}
     const _c=localStorage.getItem('fin_cache');
-    if(_c){const d=JSON.parse(_c);allTxs=d.txs||[];allAccs=d.accs||getDefaultAccs();}
+    if(_c){try{const d=JSON.parse(_c);allTxs=d.txs||[];}catch(e){}}
+    const _a=localStorage.getItem('fin_accounts');
+    if(_a){try{allAccs=JSON.parse(_a);}catch(e){allAccs=getDefaultAccs();}}
     else allAccs=getDefaultAccs();
     updateMonthLabel();renderChips();renderAll();
     setSyncStatus('Loading...','loading');
