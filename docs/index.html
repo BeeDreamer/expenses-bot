@@ -534,6 +534,12 @@ async function quickAdd(){
   } else {
     const cat=selCat||(qType==='expense'?ECATS[0]:ICATS[0]);
     allTxs.push({id:'local_'+Date.now(),type:qType,amount:amt,category:cat,description:desc||cat,date:now2.toISOString(),month,account:'Main',accountId:'a1',_local:true});
+    // update primary account balance
+    const primaryAcc=allAccs.find(a=>a.primary)||allAccs[0];
+    if(primaryAcc){
+      if(qType==='expense') primaryAcc.balance=parseFloat(primaryAcc.balance)-amt;
+      else if(qType==='income') primaryAcc.balance=parseFloat(primaryAcc.balance)+amt;
+    }
     toast('Added!');
     if(cfg.mode==='api'&&cfg.apiUrl&&cfg.userId){
       try{
@@ -774,8 +780,47 @@ function saveTx(){
   tx.type=document.getElementById('eType').value;
   closeModal('txModal');renderAll();toast('Updated locally');
 }
-function deleteTxModal(){if(!editTxId)return;allTxs=allTxs.filter(t=>t.id!==editTxId);closeModal('txModal');renderAll();toast('Deleted');}
-function quickDel(id){allTxs=allTxs.filter(t=>t.id!==id);renderAll();toast('Deleted');}
+function deleteTxModal(){
+  if(!editTxId)return;
+  const tx=allTxs.find(t=>t.id===editTxId);
+  if(tx) revertAccBalance(tx);
+  allTxs=allTxs.filter(t=>t.id!==editTxId);
+  closeModal('txModal');renderAll();
+  localStorage.setItem('fin_cache',JSON.stringify({txs:allTxs,accs:allAccs}));
+  syncDeleteToApi(editTxId);
+  toast('Deleted');
+}
+function quickDel(id){
+  const tx=allTxs.find(t=>t.id===id);
+  if(tx) revertAccBalance(tx);
+  allTxs=allTxs.filter(t=>t.id!==id);
+  renderAll();
+  localStorage.setItem('fin_cache',JSON.stringify({txs:allTxs,accs:allAccs}));
+  syncDeleteToApi(id);
+  toast('Deleted');
+}
+
+// revert account balance when deleting a transaction
+function revertAccBalance(tx){
+  const primaryAcc=allAccs.find(a=>a.primary)||allAccs[0];
+  if(!primaryAcc) return;
+  if(tx.type==='expense') primaryAcc.balance=parseFloat(primaryAcc.balance)+tx.amount;
+  else if(tx.type==='income') primaryAcc.balance=parseFloat(primaryAcc.balance)-tx.amount;
+  else if(tx.type==='transfer'){
+    const toAcc=allAccs.find(a=>a.id===tx.accountId);
+    if(toAcc) toAcc.balance=parseFloat(toAcc.balance)-tx.amount;
+  }
+}
+
+// send DELETE to Railway API
+async function syncDeleteToApi(id){
+  if(cfg.mode!=='api'||!cfg.apiUrl||!cfg.userId) return;
+  // only API-saved rows have numeric-ish ids — local rows start with 'local_'
+  if(String(id).startsWith('local_')) return;
+  try{
+    await fetch(`${cfg.apiUrl}/api/transactions/${id}?user_id=${cfg.userId}`,{method:'DELETE'});
+  }catch(e){}
+}
 
 // ── ACC MODAL ──────────────────────────────────────────────────────────────
 function openAccModal(id){
