@@ -9,10 +9,48 @@ from flask_cors import CORS
 from datetime import datetime
 
 app = Flask(__name__)
-CORS(app, origins=["https://beedreamer.github.io"])
+CORS(app, origins=["*"])  # Allow all origins for dashboard access
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8698682076:AAGa2VWg3MN0IdJcQ64Rtuegg4Mt9GvvCYE")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "Finance Bot Data")
+
+# ── COLUMN MAPPING (supports both Russian and English headers) ─────────────
+# Russian headers used by the bot: Дата, Сумма (€), Категория, Описание, Тип, Месяц, UserID
+# English headers created by API: Date, Amount, Category, Description, Type, Month, UserID
+
+def normalize_row(row: dict) -> dict:
+    """Normalize a row dict to always use English keys, regardless of header language."""
+    mapping = {
+        # Date
+        'дата': 'Date', 'date': 'Date',
+        # Amount
+        'сумма (€)': 'Amount', 'сумма': 'Amount', 'amount': 'Amount',
+        # Category
+        'категория': 'Category', 'category': 'Category',
+        # Description
+        'описание': 'Description', 'description': 'Description',
+        # Type
+        'тип': 'Type', 'type': 'Type',
+        # Month
+        'месяц': 'Month', 'month': 'Month',
+        # UserID
+        'userid': 'UserID', 'user_id': 'UserID',
+    }
+    normalized = {}
+    for k, v in row.items():
+        key_norm = mapping.get(k.lower().strip(), k)
+        normalized[key_norm] = v
+    return normalized
+
+def normalize_type(raw_type: str) -> str:
+    """Normalize type field — supports Russian and English."""
+    t = (raw_type or '').lower().strip()
+    if t in ('расход', 'expense', '-'): return 'expense'
+    if t in ('доход', 'income', '+'): return 'income'
+    if t in ('бюджет', 'budget'): return 'budget'
+    if t in ('шаблон', 'template'): return 'template'
+    if t == 'account': return 'account'
+    return t  # pass through unknown types
 
 # ── GOOGLE SHEETS ──────────────────────────────────────────────────────────────
 _spreadsheet = None
@@ -24,7 +62,10 @@ def get_spreadsheet():
     try:
         import gspread, json as _json
         from google.oauth2.service_account import Credentials
-        scopes = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
         creds_json = os.getenv("GOOGLE_CREDS_JSON")
         if creds_json:
             creds = Credentials.from_service_account_info(_json.loads(creds_json), scopes=scopes)
@@ -38,47 +79,69 @@ def get_spreadsheet():
         return None
 
 def get_user_sheet(user_id):
+    """Get or create a sheet for the user. Detects existing Russian-header sheets."""
     sp = get_spreadsheet()
     if not sp: return None
+
     sheet_name = f"user_{user_id}"
     try:
-        return sp.worksheet(sheet_name)
+        sheet = sp.worksheet(sheet_name)
+        return sheet
     except:
-        try:
-            import gspread
-            sheet = sp.add_worksheet(title=sheet_name, rows=5000, cols=8)
-            sheet.append_row(["Date","Amount","Category","Description","Type","Month","UserID"])
-            return sheet
-        except:
-            return None
+        pass
+
+    # Also try to find the sheet by checking all worksheets
+    try:
+        for ws in sp.worksheets():
+            if ws.title == sheet_name:
+                return ws
+    except:
+        pass
+
+    # Create new with English headers
+    try:
+        sheet = sp.add_worksheet(title=sheet_name, rows=5000, cols=8)
+        sheet.append_row(["Date", "Amount", "Category", "Description", "Type", "Month", "UserID"])
+        return sheet
+    except Exception as e:
+        print(f"Create sheet error: {e}")
+        return None
+
+def get_all_rows(sheet):
+    """Get all rows, normalizing Russian/English headers automatically."""
+    try:
+        raw = sheet.get_all_records()
+        return [normalize_row(r) for r in raw]
+    except Exception as e:
+        print(f"Read error: {e}")
+        return []
 
 # ── TELEGRAM AUTH ──────────────────────────────────────────────────────────────
 def verify_telegram_data(init_data: str) -> dict | None:
-    """Verify Telegram WebApp initData and return user dict if valid"""
+    """Verify Telegram WebApp initData and return user dict if valid."""
+    if not TELEGRAM_TOKEN:
+        return None
     try:
         from urllib.parse import parse_qs, unquote
         parsed = parse_qs(init_data, keep_blank_values=True)
         hash_val = parsed.get('hash', [''])[0]
-        
-        # Build check string
+
         data_pairs = []
         for key, values in sorted(parsed.items()):
             if key != 'hash':
                 data_pairs.append(f"{key}={values[0]}")
         check_string = '\n'.join(data_pairs)
-        
-        # Verify
+
         secret_key = hmac.new(b"WebAppData", TELEGRAM_TOKEN.encode(), hashlib.sha256).digest()
         expected = hmac.new(secret_key, check_string.encode(), hashlib.sha256).hexdigest()
-        
+
         if not hmac.compare_digest(expected, hash_val):
             return None
-        
-        # Check not expired (24h)
+
         auth_date = int(parsed.get('auth_date', ['0'])[0])
         if time.time() - auth_date > 86400:
             return None
-            
+
         user_str = parsed.get('user', ['{}'])[0]
         return json.loads(unquote(user_str))
     except Exception as e:
@@ -86,42 +149,50 @@ def verify_telegram_data(init_data: str) -> dict | None:
         return None
 
 def get_user_id_from_request():
-    """Extract user ID from request — supports Telegram WebApp and direct user_id param"""
-    # Try Telegram WebApp initData first
+    """Extract user ID from request — supports Telegram WebApp and direct user_id param."""
     init_data = request.headers.get('X-Telegram-Init-Data', '')
     if init_data:
         user = verify_telegram_data(init_data)
         if user:
             return user.get('id')
-    
-    # Allow direct user_id param (for API access and testing)
+
     uid = request.args.get('user_id')
     if not uid and request.is_json:
         uid = request.json.get('user_id')
     if uid:
         return int(uid)
-    
+
     return None
 
 # ── ROUTES ─────────────────────────────────────────────────────────────────────
 @app.route('/health')
 def health():
-    return jsonify({'status': 'ok', 'time': datetime.now().isoformat()})
+    sp = get_spreadsheet()
+    return jsonify({
+        'status': 'ok',
+        'time': datetime.now().isoformat(),
+        'sheets_connected': sp is not None
+    })
 
 @app.route('/api/transactions', methods=['GET'])
 def get_transactions():
     uid = get_user_id_from_request()
     if not uid:
-        return jsonify({'error': 'Unauthorized'}), 401
-    
+        return jsonify({'error': 'Unauthorized — provide user_id parameter'}), 401
+
     sheet = get_user_sheet(uid)
     if not sheet:
         return jsonify({'transactions': [], 'accounts': get_default_accounts()})
-    
+
     try:
-        rows = sheet.get_all_records()
-        # Filter out meta rows
-        txs = [r for r in rows if r.get('Type') not in ('budget', 'template', 'account')]
+        rows = get_all_rows(sheet)
+        # Filter out meta rows using normalized type
+        txs = []
+        for r in rows:
+            t = normalize_type(r.get('Type', ''))
+            if t not in ('budget', 'template', 'account'):
+                r['Type'] = t  # store normalized type back
+                txs.append(r)
         accs = get_accounts(uid, sheet)
         return jsonify({'transactions': txs, 'accounts': accs})
     except Exception as e:
@@ -132,23 +203,41 @@ def add_transaction():
     uid = get_user_id_from_request()
     if not uid:
         return jsonify({'error': 'Unauthorized'}), 401
-    
+
     data = request.json
     sheet = get_user_sheet(uid)
     if not sheet:
         return jsonify({'error': 'Storage unavailable'}), 500
-    
+
     now = datetime.now()
     try:
-        sheet.append_row([
-            now.strftime("%d.%m.%Y"),
-            float(data['amount']),
-            data['category'],
-            data.get('description', data['category']),
-            data['type'],
-            now.strftime("%Y-%m"),
-            str(uid)
-        ])
+        # Detect whether sheet uses Russian or English headers
+        existing = sheet.get_all_values()
+        headers = [h.lower().strip() for h in (existing[0] if existing else [])]
+        uses_russian = any('дата' in h or 'сумма' in h or 'тип' in h for h in headers)
+
+        if uses_russian:
+            # Write in Russian format to match existing data
+            type_ru = 'доход' if data['type'] == 'income' else 'расход'
+            sheet.append_row([
+                now.strftime("%d.%m.%Y"),
+                float(data['amount']),
+                data['category'],
+                data.get('description', data['category']),
+                type_ru,
+                now.strftime("%Y-%m"),
+                str(uid)
+            ])
+        else:
+            sheet.append_row([
+                now.strftime("%d.%m.%Y"),
+                float(data['amount']),
+                data['category'],
+                data.get('description', data['category']),
+                data['type'],
+                now.strftime("%Y-%m"),
+                str(uid)
+            ])
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -158,14 +247,14 @@ def delete_transaction(tx_id):
     uid = get_user_id_from_request()
     if not uid:
         return jsonify({'error': 'Unauthorized'}), 401
-    
+
     sheet = get_user_sheet(uid)
     if not sheet:
         return jsonify({'error': 'Storage unavailable'}), 500
-    
+
     try:
         rows = sheet.get_all_values()
-        for i, row in enumerate(rows[1:], 2):  # skip header
+        for i, row in enumerate(rows[1:], 2):
             if row and row[0] == tx_id:
                 sheet.delete_rows(i)
                 return jsonify({'success': True})
@@ -186,23 +275,21 @@ def save_accounts_route():
     uid = get_user_id_from_request()
     if not uid:
         return jsonify({'error': 'Unauthorized'}), 401
-    
+
     sheet = get_user_sheet(uid)
     if not sheet:
         return jsonify({'error': 'Storage unavailable'}), 500
-    
+
     accounts = request.json.get('accounts', [])
     try:
-        # Remove existing account rows
         rows = sheet.get_all_values()
         to_delete = [i+2 for i, r in enumerate(rows[1:]) if r and r[4] == 'account']
         for i in reversed(to_delete):
             sheet.delete_rows(i)
-        # Save new
         for acc in accounts:
             sheet.append_row([
-                acc.get('id',''), acc.get('balance', 0), acc.get('type','bank'),
-                acc.get('name',''), 'account',
+                acc.get('id', ''), acc.get('balance', 0), acc.get('type', 'bank'),
+                acc.get('name', ''), 'account',
                 'primary' if acc.get('primary') else '',
                 str(uid)
             ])
@@ -214,11 +301,17 @@ def get_accounts(uid, sheet):
     if not sheet:
         return get_default_accounts()
     try:
-        rows = sheet.get_all_records()
-        acc_rows = [r for r in rows if r.get('Type') == 'account']
+        rows = get_all_rows(sheet)
+        acc_rows = [r for r in rows if normalize_type(r.get('Type', '')) == 'account']
         if not acc_rows:
             return get_default_accounts()
-        return [{'id': r['Date'], 'balance': float(r['Amount'] or 0), 'type': r['Category'], 'name': r['Description'], 'primary': r['Month'] == 'primary'} for r in acc_rows]
+        return [{
+            'id': r['Date'],
+            'balance': float(r.get('Amount') or 0),
+            'type': r.get('Category', 'bank'),
+            'name': r.get('Description', ''),
+            'primary': r.get('Month', '') == 'primary'
+        } for r in acc_rows]
     except:
         return get_default_accounts()
 
