@@ -37,7 +37,31 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--txt);min-
 .setup-btn{width:100%;padding:12px;background:var(--acc);border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:800;color:#fff;cursor:pointer;}
 .setup-err{color:var(--red);font-size:11px;margin-top:7px;text-align:center;display:none;}
 
-/* HEADER */
+/* ONBOARDING */
+#onboarding{position:fixed;inset:0;background:var(--bg);display:none;align-items:center;justify-content:center;z-index:998;padding:20px;overflow-y:auto;}
+.ob-card{width:100%;max-width:420px;background:var(--sur);border:1px solid var(--bdr);border-radius:18px;padding:24px;}
+.ob-steps{display:flex;gap:4px;margin-bottom:20px;}
+.ob-step{flex:1;height:3px;background:var(--bdr);border-radius:2px;}
+.ob-step.done{background:var(--acc);}
+.ob-step.active{background:var(--acc);opacity:.5;}
+.ob-icon{font-size:32px;margin-bottom:8px;}
+.ob-title{font-size:18px;font-weight:800;color:var(--txt);margin-bottom:4px;}
+.ob-sub{font-size:12px;color:var(--mut);margin-bottom:20px;line-height:1.5;}
+.ob-btn{width:100%;padding:12px;background:var(--acc);border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:800;color:#fff;cursor:pointer;margin-bottom:8px;}
+.ob-skip{width:100%;padding:10px;background:transparent;border:none;font-family:'DM Sans',sans-serif;font-size:12px;color:var(--mut);cursor:pointer;}
+.ob-acc-row{display:flex;gap:7px;margin-bottom:8px;align-items:center;}
+.ob-acc-input{flex:1;background:var(--sur2);border:1px solid var(--bdr);border-radius:9px;padding:8px 11px;color:var(--txt);font-family:'DM Sans',sans-serif;font-size:13px;outline:none;}
+.ob-acc-input:focus{border-color:var(--acc);}
+.ob-add-btn{padding:8px 12px;background:var(--sur2);border:1px solid var(--bdr);border-radius:9px;font-size:13px;cursor:pointer;color:var(--mut);font-family:'DM Sans',sans-serif;}
+.ob-cat-grid{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px;}
+.ob-cat{padding:7px 12px;background:var(--sur2);border:1px solid var(--bdr);border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;color:var(--mut);}
+.ob-cat.on{background:#fef9ec;border-color:var(--acc);color:var(--acc);}
+.ob-limit-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--bdr);}
+.ob-limit-row:last-child{border-bottom:none;}
+.ob-limit-label{font-size:13px;font-weight:600;}
+.ob-limit-sub{font-size:10px;color:var(--mut);}
+.ob-limit-input{width:90px;background:var(--sur2);border:1px solid var(--bdr);border-radius:8px;padding:6px 10px;color:var(--txt);font-family:'DM Sans',sans-serif;font-size:13px;outline:none;text-align:right;}
+.ob-limit-input:focus{border-color:var(--acc);}
 .hdr{background:var(--sur);border-bottom:1px solid var(--bdr);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50;}
 .hdr-title{font-size:17px;font-weight:800;color:var(--acc);}
 .hdr-right{display:flex;align-items:center;gap:8px;}
@@ -210,6 +234,14 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--txt);min-
   </div>
 </div>
 
+<!-- ONBOARDING -->
+<div id="onboarding">
+  <div class="ob-card">
+    <div class="ob-steps" id="obSteps"></div>
+    <div id="obContent"></div>
+  </div>
+</div>
+
 <!-- MAIN APP -->
 <div id="app" style="display:none">
 
@@ -221,7 +253,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--txt);min-
       <span class="mnav-label" id="mLabel"></span>
       <button class="mnav-btn" onclick="changeMonth(1)">›</button>
     </div>
-    <button class="settings-btn" onclick="openSetup()">⚙</button>
+    <button class="settings-btn" onclick="openSettingsMenu()">⚙</button>
   </div>
 </div>
 
@@ -337,6 +369,18 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--txt);min-
 
 </div><!-- end #app -->
 
+<!-- SETTINGS MENU -->
+<div class="modal-bg" id="settingsModal">
+  <div class="modal">
+    <div class="modal-head"><span class="modal-title">Settings</span><button class="modal-x" onclick="closeModal('settingsModal')">×</button></div>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <button class="acc-btn" style="padding:12px;font-size:13px;text-align:left" onclick="closeModal('settingsModal');startOnboarding()">🚀 Setup wizard</button>
+      <button class="acc-btn" style="padding:12px;font-size:13px;text-align:left" onclick="closeModal('settingsModal');openSetup()">👤 Change account</button>
+      <button class="acc-btn" style="padding:12px;font-size:13px;text-align:left;color:var(--red);border-color:var(--red)" onclick="closeModal('settingsModal');logOut()">↩ Log out</button>
+    </div>
+  </div>
+</div>
+
 <!-- TX MODAL -->
 <div class="modal-bg" id="txModal">
   <div class="modal">
@@ -399,6 +443,14 @@ let setupMode = 'bot';
 function switchSetupMode(mode,btn){} // compatibility
 function switchSetupTab(mode,btn){} // compatibility
 
+function openSettingsMenu(){ openModal('settingsModal'); }
+function logOut(){
+  localStorage.removeItem('fin_cfg');
+  localStorage.removeItem('fin_cache');
+  localStorage.removeItem('fin_accounts');
+  localStorage.removeItem('fin_onboarded');
+  location.reload();
+}
 function openSetup(){
   document.getElementById('app').style.display='none';
   document.getElementById('setup').style.display='flex';
@@ -414,6 +466,10 @@ async function connect(){
   document.getElementById('setup').style.display='none';
   document.getElementById('app').style.display='block';
   await loadData();
+  // Show onboarding for new users
+  if(!localStorage.getItem('fin_onboarded')){
+    setTimeout(()=>startOnboarding(), 500);
+  }
 }
 
 // ── DATA LOADING ──────────────────────────────────────────────────────────
@@ -470,9 +526,16 @@ async function loadFromApi(){
   const resp=await fetch(`${cfg.apiUrl}/api/transactions?user_id=${uid}`);
   if(!resp.ok) throw new Error('API error '+resp.status);
   const data=await resp.json();
-  allTxs=(data.transactions||[]).map((r,i)=>normalizeApiRow(r,i))
+  const newTxs=(data.transactions||[]).map((r,i)=>normalizeApiRow(r,i))
     .filter(t=>!['budget','template','account'].includes(t.type));
-  // Load accounts from API — these are the source of truth
+  // If API returns empty — user may have deleted all data via bot, clear cache
+  if(newTxs.length===0 && allTxs.length>0){
+    allTxs=[];
+    localStorage.removeItem('fin_cache');
+  } else {
+    allTxs=newTxs;
+  }
+  // Load accounts from API
   try{
     const accResp=await fetch(`${cfg.apiUrl}/api/accounts?user_id=${uid}`);
     if(accResp.ok){
@@ -482,7 +545,7 @@ async function loadFromApi(){
         localStorage.setItem('fin_accounts',JSON.stringify(allAccs));
       }
     }
-  }catch(e){ /* use localStorage accounts */ }
+  }catch(e){}
 }
 
 function recalcBalances(){
@@ -912,6 +975,180 @@ function deleteAcc(id){
 function openModal(id){document.getElementById(id).classList.add('open');document.body.style.overflow='hidden';}
 function closeModal(id){document.getElementById(id).classList.remove('open');document.body.style.overflow='';if(id==='txModal')editTxId=null;if(id==='accModal')editAccId=null;}
 document.querySelectorAll('.modal-bg').forEach(bg=>{bg.addEventListener('click',e=>{if(e.target===bg)closeModal(bg.id);});});
+
+// ── ONBOARDING ─────────────────────────────────────────────────────────────
+const OB_STEPS = 4;
+let obStep = 0;
+let obData = { accounts:[], pinnedCats:[], limits:{}, notifications:false };
+
+function startOnboarding(){
+  obStep = 0;
+  obData = { accounts:[], pinnedCats:[], limits:{}, notifications:false };
+  document.getElementById('onboarding').style.display='flex';
+  renderObStep();
+}
+
+function renderObStepIndicator(){
+  document.getElementById('obSteps').innerHTML = Array.from({length:OB_STEPS},(_,i)=>
+    `<div class="ob-step ${i<obStep?'done':i===obStep?'active':''}"></div>`
+  ).join('');
+}
+
+function renderObStep(){
+  renderObStepIndicator();
+  const el = document.getElementById('obContent');
+  if(obStep===0) el.innerHTML = obStep0();
+  if(obStep===1) el.innerHTML = obStep1();
+  if(obStep===2) el.innerHTML = obStep2();
+  if(obStep===3) el.innerHTML = obStep3();
+}
+
+function obStep0(){
+  return `
+    <div class="ob-icon">💳</div>
+    <div class="ob-title">Your accounts</div>
+    <div class="ob-sub">Add your bank accounts, cash, and investment accounts with their current balances.</div>
+    <div id="obAccList"></div>
+    <button class="ob-add-btn" style="width:100%;margin-bottom:16px" onclick="obAddAccRow()">+ Add account</button>
+    <button class="ob-btn" onclick="obSaveAccounts()">Continue →</button>
+    <button class="ob-skip" onclick="obNext()">Skip for now</button>
+  `;
+}
+
+function obAddAccRow(name='', bal='', type='bank'){
+  const list = document.getElementById('obAccList');
+  const row = document.createElement('div');
+  row.className='ob-acc-row';
+  row.innerHTML=`
+    <select class="ob-acc-input" style="max-width:36px;padding:8px 4px;text-align:center">
+      <option value="bank" ${type==='bank'?'selected':''}>🏦</option>
+      <option value="cash" ${type==='cash'?'selected':''}>💵</option>
+      <option value="invest" ${type==='invest'?'selected':''}>📈</option>
+      <option value="card" ${type==='card'?'selected':''}>💳</option>
+    </select>
+    <input class="ob-acc-input" placeholder="Account name" value="${name}">
+    <input class="ob-acc-input" type="number" placeholder="Balance €" value="${bal}" style="max-width:90px">
+    <button class="ob-add-btn" onclick="this.parentNode.remove()">✕</button>
+  `;
+  list.appendChild(row);
+}
+
+function obSaveAccounts(){
+  const rows = document.querySelectorAll('#obAccList .ob-acc-row');
+  obData.accounts = [];
+  rows.forEach(row=>{
+    const inputs = row.querySelectorAll('input,select');
+    const type = inputs[0].value;
+    const name = inputs[1].value.trim();
+    const bal = parseFloat(inputs[2].value)||0;
+    if(name) obData.accounts.push({id:'a'+Date.now()+Math.random(),name,type,balance:bal});
+  });
+  if(obData.accounts.length>0){
+    allAccs = obData.accounts;
+    allAccs[0].primary = true;
+    saveAccounts();
+  }
+  obNext();
+}
+
+function obStep1(){
+  const all = ECATS;
+  return `
+    <div class="ob-icon">🗂</div>
+    <div class="ob-title">Pin your top categories</div>
+    <div class="ob-sub">Select up to 5 categories you use most — they'll appear first when adding expenses.</div>
+    <div class="ob-cat-grid" id="obCatGrid">
+      ${all.map(c=>`<div class="ob-cat${obData.pinnedCats.includes(c)?' on':''}" onclick="obToggleCat('${c}')">${ICONS[c]||'📦'} ${c}</div>`).join('')}
+    </div>
+    <button class="ob-btn" onclick="obSaveCats()">Continue →</button>
+    <button class="ob-skip" onclick="obNext()">Skip for now</button>
+  `;
+}
+
+function obToggleCat(c){
+  if(obData.pinnedCats.includes(c)){
+    obData.pinnedCats = obData.pinnedCats.filter(x=>x!==c);
+  } else if(obData.pinnedCats.length<5){
+    obData.pinnedCats.push(c);
+  } else {
+    toast('Max 5 categories');
+    return;
+  }
+  document.querySelectorAll('.ob-cat').forEach(el=>{
+    el.classList.toggle('on', obData.pinnedCats.includes(el.textContent.trim().replace(/^[\p{Emoji}\s]+/u,'')));
+  });
+}
+
+function obSaveCats(){
+  if(obData.pinnedCats.length>0){
+    localStorage.setItem('fin_pinned_cats', JSON.stringify(obData.pinnedCats));
+  }
+  obNext();
+}
+
+function obStep2(){
+  return `
+    <div class="ob-icon">🎯</div>
+    <div class="ob-title">Set spending limits</div>
+    <div class="ob-sub">Get notified via Telegram when you're close to your limit. You can change these anytime.</div>
+    <div style="background:var(--sur2);border-radius:12px;padding:12px;margin-bottom:16px;">
+      <div class="ob-limit-row">
+        <div><div class="ob-limit-label">Daily limit</div><div class="ob-limit-sub">Max spend per day</div></div>
+        <input class="ob-limit-input" type="number" id="limDay" placeholder="e.g. 50">
+      </div>
+      <div class="ob-limit-row">
+        <div><div class="ob-limit-label">Weekly limit</div><div class="ob-limit-sub">Max spend per week</div></div>
+        <input class="ob-limit-input" type="number" id="limWeek" placeholder="e.g. 200">
+      </div>
+      <div class="ob-limit-row">
+        <div><div class="ob-limit-label">Monthly limit</div><div class="ob-limit-sub">Max spend per month</div></div>
+        <input class="ob-limit-input" type="number" id="limMonth" placeholder="e.g. 1500">
+      </div>
+    </div>
+    <button class="ob-btn" onclick="obSaveLimits()">Continue →</button>
+    <button class="ob-skip" onclick="obNext()">Skip for now</button>
+  `;
+}
+
+function obSaveLimits(){
+  obData.limits = {
+    day: parseFloat(document.getElementById('limDay').value)||0,
+    week: parseFloat(document.getElementById('limWeek').value)||0,
+    month: parseFloat(document.getElementById('limMonth').value)||0,
+  };
+  if(obData.limits.day||obData.limits.week||obData.limits.month){
+    localStorage.setItem('fin_limits', JSON.stringify(obData.limits));
+  }
+  obNext();
+}
+
+function obStep3(){
+  return `
+    <div class="ob-icon">🔔</div>
+    <div class="ob-title">Notifications</div>
+    <div class="ob-sub">Get a Telegram message when you're at 80% and 100% of your spending limits. Make sure you've started the bot first.</div>
+    <div style="background:var(--sur2);border-radius:12px;padding:14px;margin-bottom:16px;font-size:13px;text-align:center;color:var(--mut);">
+      Notifications will be sent to your Telegram account automatically when you add transactions via the bot.
+    </div>
+    <button class="ob-btn" onclick="obFinish(true)">Enable notifications ✓</button>
+    <button class="ob-skip" onclick="obFinish(false)">Skip for now</button>
+  `;
+}
+
+function obNext(){
+  obStep++;
+  if(obStep>=OB_STEPS){ obFinish(false); return; }
+  renderObStep();
+}
+
+function obFinish(notifications){
+  obData.notifications = notifications;
+  localStorage.setItem('fin_notifications', notifications?'1':'0');
+  localStorage.setItem('fin_onboarded', '1');
+  document.getElementById('onboarding').style.display='none';
+  toast('Setup complete! 🎉');
+  renderAll();
+}
 
 // ── INIT ───────────────────────────────────────────────────────────────────
 
