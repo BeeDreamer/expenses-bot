@@ -381,72 +381,6 @@ async def q_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     write_user_tx(uid, datetime.now(), t["amount"], t["category"], name, "expense")
     await update.message.reply_text(f"⚡ *Quick add:* -{t['amount']:.2f}€ ({t['category']})", parse_mode="Markdown")
 
-async def settings_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    rows = get_tx(uid)
-    # Get current setting
-    current = next((r for r in rows if r.get('Type') == 'setting' and r.get('Category') == 'reminder_time'), None)
-    current_time = current['Description'] if current else f"{DEFAULT_REMINDER_HOUR:02d}:00"
-
-    if ctx.args and len(ctx.args) == 1:
-        # Set new time e.g. /settings 19:30
-        try:
-            parts = ctx.args[0].split(':')
-            hour = int(parts[0])
-            minute = int(parts[1]) if len(parts) > 1 else 0
-            if not (0 <= hour <= 23 and 0 <= minute <= 59):
-                raise ValueError
-            # Save as special row
-            sheet = get_user_sheet(uid)
-            if sheet:
-                all_rows = sheet.get_all_values()
-                # Remove old setting
-                for i, row in enumerate(all_rows[1:], 2):
-                    if len(row) > 4 and row[4] == 'setting' and len(row) > 3 and row[2] == 'reminder_time':
-                        sheet.delete_rows(i)
-                        break
-                sheet.append_row([
-                    datetime.now().strftime("%d.%m.%Y"),
-                    0, 'reminder_time', f"{hour:02d}:{minute:02d}",
-                    'setting', datetime.now().strftime("%Y-%m"), str(uid)
-                ])
-            await update.message.reply_text(
-                f"✅ Reminder time set to *{hour:02d}:{minute:02d}* ({TIMEZONE})\n\n"
-                f"You'll receive:\n"
-                f"• Daily reminder at {hour:02d}:{minute:02d}\n"
-                f"• Weekly summary on Sundays at {hour:02d}:{minute:02d}\n"
-                f"• Monthly report on the 1st at 20:00",
-                parse_mode="Markdown"
-            )
-        except:
-            await update.message.reply_text(
-                "❌ Invalid time format. Use: `/settings 19:30`",
-                parse_mode="Markdown"
-            )
-    else:
-        await update.message.reply_text(
-            f"⚙️ *Notification Settings*\n\n"
-            f"Current reminder time: *{current_time}*\n\n"
-            f"To change: `/settings HH:MM`\n"
-            f"Example: `/settings 19:30`\n\n"
-            f"*What you receive:*\n"
-            f"🌙 Daily reminder at your set time\n"
-            f"📊 Weekly summary every Sunday\n"
-            f"📅 Monthly report on the 1st\n\n"
-            f"Timezone: `{TIMEZONE}`",
-            parse_mode="Markdown"
-        )
-    uid = update.effective_user.id
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Yes, delete everything", callback_data="deleteconfirm:yes"),
-        InlineKeyboardButton("❌ Cancel", callback_data="deleteconfirm:no"),
-    ]])
-    await update.message.reply_text(
-        "⚠️ *Are you sure?*\n\nThis will permanently delete ALL your transactions and data. This cannot be undone.",
-        parse_mode="Markdown", reply_markup=keyboard
-    )
-
-
 async def exportxls_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     rows = get_tx(uid)
@@ -659,6 +593,63 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"Category: {category}\nDate: {info['date'].strftime('%d.%m.%Y %H:%M')}",
         parse_mode="Markdown"
     )
+
+async def deletedata_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Yes, delete everything", callback_data="deleteconfirm:yes"),
+        InlineKeyboardButton("❌ Cancel", callback_data="deleteconfirm:no"),
+    ]])
+    await update.message.reply_text(
+        "⚠️ *Are you sure?*\n\nThis will permanently delete ALL your transactions and data. This cannot be undone.",
+        parse_mode="Markdown", reply_markup=keyboard
+    )
+
+async def settings_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    rows = get_tx(uid)
+    current = next((r for r in rows if r.get('Type') == 'setting' and r.get('Category') == 'reminder_time'), None)
+    current_time = current['Description'] if current else "20:00"
+    if ctx.args and len(ctx.args) == 1:
+        try:
+            parts = ctx.args[0].split(':')
+            hour = int(parts[0])
+            minute = int(parts[1]) if len(parts) > 1 else 0
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError
+            sheet = get_user_sheet(uid)
+            if sheet:
+                all_rows = sheet.get_all_values()
+                for i, row in enumerate(all_rows[1:], 2):
+                    if len(row) > 4 and row[4] == 'setting':
+                        sheet.delete_rows(i)
+                        break
+                sheet.append_row([
+                    datetime.now().strftime("%d.%m.%Y"), 0,
+                    'reminder_time', f"{hour:02d}:{minute:02d}",
+                    'setting', datetime.now().strftime("%Y-%m"), str(uid)
+                ])
+            await update.message.reply_text(
+                f"✅ Reminder time set to *{hour:02d}:{minute:02d}*\n\n"
+                f"• Daily reminder at {hour:02d}:{minute:02d}\n"
+                f"• Weekly summary on Sundays at {hour:02d}:{minute:02d}\n"
+                f"• Monthly report on the 1st at 20:00",
+                parse_mode="Markdown"
+            )
+        except:
+            await update.message.reply_text("❌ Invalid format. Use: `/settings 19:30`", parse_mode="Markdown")
+    else:
+        await update.message.reply_text(
+            f"⚙️ *Notification Settings*\n\n"
+            f"Current reminder time: *{current_time}*\n\n"
+            f"To change: `/settings HH:MM`\n"
+            f"Example: `/settings 19:30`\n\n"
+            f"*Notifications:*\n"
+            f"🌙 Daily reminder at your set time\n"
+            f"📊 Weekly summary every Sunday\n"
+            f"📅 Monthly report on the 1st at 20:00",
+            parse_mode="Markdown"
+        )
 
 # ─── SCHEDULER FUNCTIONS ──────────────────────────────────────────────────────
 
