@@ -451,6 +451,16 @@ function logOut(){
   localStorage.removeItem('fin_onboarded');
   location.reload();
 }
+function openSettingsMenu(){ openModal('settingsModal'); }
+
+function logOut(){
+  localStorage.removeItem('fin_cfg');
+  localStorage.removeItem('fin_cache');
+  localStorage.removeItem('fin_accounts');
+  localStorage.removeItem('fin_onboarded');
+  location.reload();
+}
+
 function openSetup(){
   document.getElementById('app').style.display='none';
   document.getElementById('setup').style.display='flex';
