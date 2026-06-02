@@ -270,21 +270,17 @@ def delete_transaction(tx_id):
 
         for i, row in enumerate(rows[1:], 2):
             if not row: continue
-            # try compound key match first
             if match_date and match_amount:
                 row_date = row[date_col] if len(row) > date_col else ''
                 row_amt = str(row[amt_col]) if len(row) > amt_col else ''
-                row_desc = row[desc_col] if len(row) > desc_col else ''
-                # normalize amount for comparison
                 try:
                     amt_match = abs(float(row_amt) - float(match_amount)) < 0.01
                 except:
                     amt_match = row_amt == match_amount
+                # Match by date + amount only — description can vary
                 if row_date == match_date and amt_match:
-                    if not match_desc or match_desc == '—' or row_desc == match_desc or match_desc == '':
-                        sheet.delete_rows(i)
-                        return jsonify({'success': True})
-            # legacy: match by first column
+                    sheet.delete_rows(i)
+                    return jsonify({'success': True})
             elif row[0] == tx_id:
                 sheet.delete_rows(i)
                 return jsonify({'success': True})

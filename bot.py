@@ -15,6 +15,9 @@ except ImportError:
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+import pytz
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -378,7 +381,61 @@ async def q_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     write_user_tx(uid, datetime.now(), t["amount"], t["category"], name, "expense")
     await update.message.reply_text(f"⚡ *Quick add:* -{t['amount']:.2f}€ ({t['category']})", parse_mode="Markdown")
 
-async def deletedata_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def settings_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    rows = get_tx(uid)
+    # Get current setting
+    current = next((r for r in rows if r.get('Type') == 'setting' and r.get('Category') == 'reminder_time'), None)
+    current_time = current['Description'] if current else f"{DEFAULT_REMINDER_HOUR:02d}:00"
+
+    if ctx.args and len(ctx.args) == 1:
+        # Set new time e.g. /settings 19:30
+        try:
+            parts = ctx.args[0].split(':')
+            hour = int(parts[0])
+            minute = int(parts[1]) if len(parts) > 1 else 0
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError
+            # Save as special row
+            sheet = get_user_sheet(uid)
+            if sheet:
+                all_rows = sheet.get_all_values()
+                # Remove old setting
+                for i, row in enumerate(all_rows[1:], 2):
+                    if len(row) > 4 and row[4] == 'setting' and len(row) > 3 and row[2] == 'reminder_time':
+                        sheet.delete_rows(i)
+                        break
+                sheet.append_row([
+                    datetime.now().strftime("%d.%m.%Y"),
+                    0, 'reminder_time', f"{hour:02d}:{minute:02d}",
+                    'setting', datetime.now().strftime("%Y-%m"), str(uid)
+                ])
+            await update.message.reply_text(
+                f"✅ Reminder time set to *{hour:02d}:{minute:02d}* ({TIMEZONE})\n\n"
+                f"You'll receive:\n"
+                f"• Daily reminder at {hour:02d}:{minute:02d}\n"
+                f"• Weekly summary on Sundays at {hour:02d}:{minute:02d}\n"
+                f"• Monthly report on the 1st at 20:00",
+                parse_mode="Markdown"
+            )
+        except:
+            await update.message.reply_text(
+                "❌ Invalid time format. Use: `/settings 19:30`",
+                parse_mode="Markdown"
+            )
+    else:
+        await update.message.reply_text(
+            f"⚙️ *Notification Settings*\n\n"
+            f"Current reminder time: *{current_time}*\n\n"
+            f"To change: `/settings HH:MM`\n"
+            f"Example: `/settings 19:30`\n\n"
+            f"*What you receive:*\n"
+            f"🌙 Daily reminder at your set time\n"
+            f"📊 Weekly summary every Sunday\n"
+            f"📅 Monthly report on the 1st\n\n"
+            f"Timezone: `{TIMEZONE}`",
+            parse_mode="Markdown"
+        )
     uid = update.effective_user.id
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Yes, delete everything", callback_data="deleteconfirm:yes"),
@@ -603,6 +660,149 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+# ─── SCHEDULER FUNCTIONS ──────────────────────────────────────────────────────
+
+TIMEZONE = pytz.timezone(os.getenv("BOT_TIMEZONE", "Europe/Berlin"))
+DEFAULT_REMINDER_HOUR = int(os.getenv("REMINDER_HOUR", "20"))
+DEFAULT_REMINDER_MINUTE = int(os.getenv("REMINDER_MINUTE", "0"))
+
+def get_all_user_ids():
+    """Get all user IDs from spreadsheet tabs."""
+    sp = get_spreadsheet()
+    if not sp:
+        return []
+    try:
+        user_ids = []
+        for ws in sp.worksheets():
+            if ws.title.startswith('user_'):
+                try:
+                    uid = int(ws.title.replace('user_', ''))
+                    user_ids.append(uid)
+                except:
+                    pass
+        return user_ids
+    except Exception as e:
+        logger.error(f"get_all_user_ids error: {e}")
+        return []
+
+async def send_daily_reminder(app):
+    """Send daily expense reminder — respects per-user time settings."""
+    user_ids = get_all_user_ids()
+    now = datetime.now(TIMEZONE)
+    current_hour = now.hour
+    current_minute = now.minute
+    logger.info(f"Daily reminder check @ {current_hour:02d}:{current_minute:02d} → {len(user_ids)} users")
+    for uid in user_ids:
+        try:
+            # Check user's custom time setting
+            rows = get_tx(uid)
+            setting = next((r for r in rows if r.get('Type') == 'setting' and r.get('Category') == 'reminder_time'), None)
+            if setting:
+                parts = setting.get('Description','20:00').split(':')
+                user_hour = int(parts[0])
+                user_minute = int(parts[1]) if len(parts)>1 else 0
+                if current_hour != user_hour or abs(current_minute - user_minute) > 5:
+                    continue  # not their time yet
+            await app.bot.send_message(
+                chat_id=uid,
+                text=(
+                    "🌙 *Evening check-in!*\n\n"
+                    "Don't forget to log today's expenses 📝\n\n"
+                    "Just send me:\n"
+                    "`coffee 4.5` — expense\n"
+                    "`salary +3000` — income\n\n"
+                    "Use /stats to see today's summary.\n"
+                    "To change reminder time: /settings"
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.warning(f"Daily reminder failed for {uid}: {e}")
+
+async def send_weekly_stats(app):
+    """Send weekly stats every Sunday at 8 PM."""
+    user_ids = get_all_user_ids()
+    now = datetime.now(TIMEZONE)
+    logger.info(f"Weekly stats → {len(user_ids)} users")
+    for uid in user_ids:
+        try:
+            rows = get_tx(uid)
+            week_txs = []
+            for r in rows:
+                try:
+                    date_str = r.get('Date', r.get('Дата', ''))
+                    if '.' in date_str:
+                        p = date_str.split('.')
+                        yr = int(p[2]) if len(p[2])==4 else 2000+int(p[2])
+                        tx_date = datetime(yr, int(p[1]), int(p[0]))
+                        if tx_date.date() >= (now - timedelta(days=7)).date():
+                            week_txs.append(r)
+                except:
+                    pass
+
+            exp = sum(float(r.get('Amount', r.get('Сумма (€)', 0))) for r in week_txs
+                     if str(r.get('Type', r.get('Тип',''))).lower() in ('expense','расход'))
+            inc = sum(float(r.get('Amount', r.get('Сумма (€)', 0))) for r in week_txs
+                     if str(r.get('Type', r.get('Тип',''))).lower() in ('income','доход'))
+            by_cat = {}
+            for r in week_txs:
+                t = str(r.get('Type', r.get('Тип',''))).lower()
+                if t in ('expense','расход'):
+                    cat = r.get('Category', r.get('Категория','Other'))
+                    by_cat[cat] = by_cat.get(cat, 0) + float(r.get('Amount', r.get('Сумма (€)', 0)))
+            top = sorted(by_cat.items(), key=lambda x: x[1], reverse=True)[:3]
+
+            date_from = (now - timedelta(days=7)).strftime('%d.%m')
+            date_to = now.strftime('%d.%m')
+            lines = [f"📊 *Weekly Summary* ({date_from} — {date_to})\n"]
+            lines.append(f"💸 Spent: *{exp:.2f}€*")
+            if inc > 0:
+                lines.append(f"💚 Earned: *{inc:.2f}€*")
+            lines.append(f"📈 Net: *{inc-exp:+.2f}€*\n")
+            if top:
+                lines.append("*Top categories:*")
+                for cat, amt in top:
+                    pct = amt/exp*100 if exp > 0 else 0
+                    lines.append(f"  {cat}: {amt:.2f}€ ({pct:.0f}%)")
+            lines.append("\nUse /stats for full breakdown.")
+
+            await app.bot.send_message(chat_id=uid, text='\n'.join(lines), parse_mode="Markdown")
+        except Exception as e:
+            logger.warning(f"Weekly stats failed for {uid}: {e}")
+
+async def send_monthly_stats(app):
+    """Send monthly stats on the 1st of each month at 8 AM."""
+    user_ids = get_all_user_ids()
+    now = datetime.now(TIMEZONE)
+    last_month = (now.replace(day=1) - timedelta(days=1))
+    month_key = last_month.strftime("%Y-%m")
+    month_name = last_month.strftime("%B %Y")
+    logger.info(f"Monthly stats → {len(user_ids)} users")
+    for uid in user_ids:
+        try:
+            exp, inc, by_cat = get_month_stats(uid, month_key)
+            if exp == 0 and inc == 0:
+                continue  # skip users with no data
+            top = sorted(by_cat.items(), key=lambda x: x[1], reverse=True)[:5]
+
+            lines = [f"📅 *Monthly Report — {month_name}*\n"]
+            lines.append(f"💸 Total spent: *{exp:.2f}€*")
+            if inc > 0:
+                lines.append(f"💚 Total earned: *{inc:.2f}€*")
+                lines.append(f"📈 Balance: *{inc-exp:+.2f}€*")
+            lines.append("")
+            if top:
+                lines.append("*Spending breakdown:*")
+                for cat, amt in top:
+                    pct = amt/exp*100 if exp > 0 else 0
+                    bar = "▓" * min(int(amt/50), 8)
+                    lines.append(f"{cat}: *{amt:.2f}€* ({pct:.0f}%) {bar}")
+            lines.append("\nGreat job tracking! Keep it up 💪")
+
+            await app.bot.send_message(chat_id=uid, text='\n'.join(lines), parse_mode="Markdown")
+        except Exception as e:
+            logger.warning(f"Monthly stats failed for {uid}: {e}")
+
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -618,9 +818,35 @@ def main():
     app.add_handler(CommandHandler("q", q_cmd))
     app.add_handler(CommandHandler("deletedata", deletedata_cmd))
     app.add_handler(CommandHandler("exportxls", exportxls_cmd))
+    app.add_handler(CommandHandler("settings", settings_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # ── Scheduler ──
+    scheduler = AsyncIOScheduler(timezone=TIMEZONE)
+
+    # Daily reminder — runs every 5 min, checks each user's custom time
+    scheduler.add_job(
+        lambda: app.create_task(send_daily_reminder(app)),
+        CronTrigger(minute='*/5', timezone=TIMEZONE),
+        id='daily_reminder'
+    )
+    # Weekly stats — every Sunday at default time
+    scheduler.add_job(
+        lambda: app.create_task(send_weekly_stats(app)),
+        CronTrigger(day_of_week='sun', hour=DEFAULT_REMINDER_HOUR, minute=DEFAULT_REMINDER_MINUTE, timezone=TIMEZONE),
+        id='weekly_stats'
+    )
+    # Monthly stats — 1st of each month at 20:00
+    scheduler.add_job(
+        lambda: app.create_task(send_monthly_stats(app)),
+        CronTrigger(day=1, hour=20, minute=0, timezone=TIMEZONE),
+        id='monthly_stats'
+    )
+
+    scheduler.start()
     print("🤖 Finance Bot v3 — Multi-user mode started!")
+    print(f"⏰ Scheduler running: daily @20:00, weekly Sun @20:00, monthly 1st @08:00 ({TIMEZONE})")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
