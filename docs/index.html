@@ -409,8 +409,17 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--txt);min-
     <div class="fg"><div class="fl">Name</div><input class="fi" id="aName" placeholder="Trade Republic"></div>
     <div class="fg"><div class="fl">Type</div>
       <select class="fs" id="aType">
-        <option value="bank">🏦 Bank</option><option value="cash">💵 Cash</option>
-        <option value="invest">📈 Investments</option><option value="card">💳 Card</option>
+        <option value="bank">🏦 Bank</option>
+        <option value="card">💳 Card</option>
+        <option value="cash">💵 Cash (€)</option>
+        <option value="cash-eur">💶 Cash EUR</option>
+        <option value="cash-usd">💵 Cash USD</option>
+        <option value="cash-gbp">💷 Cash GBP</option>
+        <option value="invest">📈 Investments</option>
+        <option value="broker">📊 Broker</option>
+        <option value="crypto">₿ Crypto</option>
+        <option value="savings">🏧 Savings</option>
+        <option value="pension">🏦 Pension</option>
       </select>
     </div>
     <div class="fg"><div class="fl">Balance (€)</div><input class="fi" type="number" id="aBal" placeholder="0.00" step="0.01"></div>
@@ -423,11 +432,26 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--txt);min-
 
 <script>
 const MS_S=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const ECATS=['Groceries','Rent','Transport','Subscriptions','Dining','Clothing','Health','Entertainment','Sports','Travel','Education','Home','Investments','Other'];
+const ECATS=['Groceries','Cafe','Rent','Transport','Subscriptions','Dining','Clothing','Health','Entertainment','Sports','Travel','Education','Home','Investments','Other'];
 const ICATS=['Salary','Freelance','Dividends','Gift','Rental income','Other income'];
-const ICONS={Groceries:'🛒',Rent:'🏠',Transport:'🚌',Subscriptions:'📱',Dining:'🍽',Clothing:'👕',Health:'💊',Entertainment:'🎮',Sports:'🏋',Travel:'✈️',Education:'📚',Home:'🔧',Investments:'💰',Other:'📦',Salary:'💼',Freelance:'🖥',Dividends:'📈',Gift:'🎁','Rental income':'🏠','Other income':'💡'};
+const ICONS={
+  Groceries:'🛒',Cafe:'☕',Rent:'🏠',Transport:'🚌',Subscriptions:'📱',
+  Dining:'🍽️',Clothing:'👕',Health:'💊',Entertainment:'🎮',Sports:'🏋️',
+  Travel:'✈️',Education:'📚',Home:'🔧',Investments:'💰',Other:'📦',
+  Salary:'💼',Freelance:'💻',Dividends:'📈',Gift:'🎁',
+  'Rental income':'🏠','Other income':'💡'
+};
 const COLORS=['#b8860b','#2563eb','#16a34a','#dc2626','#7c3aed','#ea580c','#059669','#db2777','#0284c7','#ca8a04','#65a30d','#9333ea','#475569','#d97706'];
-const AICONS={bank:'🏦',cash:'💵',invest:'📈',card:'💳'};
+const AICONS={
+  bank:'🏦', cash:'💵', invest:'📈', card:'💳',
+  'cash-eur':'💶', 'cash-usd':'💵', 'cash-gbp':'💷',
+  crypto:'₿', savings:'🏧', broker:'📊', pension:'🏦'
+};
+const ATYPE_LABELS={
+  bank:'Bank', cash:'Cash (€)', invest:'Investments', card:'Card',
+  'cash-eur':'Cash EUR', 'cash-usd':'Cash USD', 'cash-gbp':'Cash GBP',
+  crypto:'Crypto', savings:'Savings', broker:'Broker', pension:'Pension'
+};
 
 const now=new Date();
 let curY=now.getFullYear(), curM=now.getMonth();
@@ -451,7 +475,6 @@ function logOut(){
   localStorage.removeItem('fin_onboarded');
   location.reload();
 }
-function openSettingsMenu(){ openModal('settingsModal'); }
 
 function logOut(){
   localStorage.removeItem('fin_cfg');
@@ -861,7 +884,7 @@ function renderAccounts(){
   }
   const maxB=Math.max(...allAccs.map(a=>Math.abs(parseFloat(a.balance))),1);
   document.getElementById('accBars').innerHTML=allAccs.map((a,i)=>`<div class="abar"><span class="abar-lbl">${AICONS[a.type]||'💳'} ${a.name}</span><div class="abar-track"><div class="abar-fill" style="width:${Math.max(parseFloat(a.balance),0)/maxB*100}%;background:${COLORS[i%COLORS.length]}"></div></div><span class="abar-val">${parseFloat(a.balance).toFixed(0)} €</span></div>`).join('');
-  document.getElementById('accList').innerHTML=allAccs.map((a,i)=>`<div class="acccard${a.primary?' primary':''}"><div class="acc-top"><div class="acc-left"><span class="acc-ico">${AICONS[a.type]||'💳'}</span><div><div class="acc-name">${a.name}${a.primary?'<span class="acc-badge">Primary</span>':''}</div><div class="acc-type">${a.type}</div></div></div><span class="acc-bal" style="color:${parseFloat(a.balance||0)>=0?'var(--acc)':'var(--red)'}">${parseFloat(a.balance||0).toFixed(2)} €</span></div><div class="acc-btns"><button class="acc-btn" onclick="openAccModal('${a.id}')">Edit</button>${!a.primary?`<button class="acc-btn pri" onclick="setPrimary('${a.id}')">Set primary</button>`:'<span style="font-size:10px;color:var(--mut);padding:7px;flex:1;text-align:center">Default</span>'}</div></div>`).join('');
+  document.getElementById('accList').innerHTML=allAccs.map((a,i)=>`<div class="acccard${a.primary?' primary':''}"><div class="acc-top"><div class="acc-left"><span class="acc-ico">${AICONS[a.type]||'💳'}</span><div><div class="acc-name">${a.name}${a.primary?'<span class="acc-badge">Primary</span>':''}</div><div class="acc-type">${ATYPE_LABELS[a.type]||a.type}</div></div></div><span class="acc-bal" style="color:${parseFloat(a.balance||0)>=0?'var(--acc)':'var(--red)'}">${parseFloat(a.balance||0).toFixed(2)} €</span></div><div class="acc-btns"><button class="acc-btn" onclick="openAccModal('${a.id}')">Edit</button>${!a.primary?`<button class="acc-btn pri" onclick="setPrimary('${a.id}')">Set primary</button>`:'<span style="font-size:10px;color:var(--mut);padding:7px;flex:1;text-align:center">Default</span>'}</div></div>`).join('');
 }
 
 // ── TX MODAL ───────────────────────────────────────────────────────────────
@@ -1017,7 +1040,11 @@ function obStep0(){
   return `
     <div class="ob-icon">💳</div>
     <div class="ob-title">Your accounts</div>
-    <div class="ob-sub">Add your bank accounts, cash, and investment accounts with their current balances.</div>
+    <div class="ob-sub">Add your accounts with current balances.<br><br>
+    <b>💡 How it works:</b><br>
+    • <b>Primary account</b> — expenses & income are tracked here automatically. You can change it anytime in Accounts tab.<br>
+    • Other accounts update when you make a Transfer.<br>
+    • You can always edit balances manually.</div>
     <div id="obAccList"></div>
     <button class="ob-add-btn" style="width:100%;margin-bottom:16px" onclick="obAddAccRow()">+ Add account</button>
     <button class="ob-btn" onclick="obSaveAccounts()">Continue →</button>
@@ -1030,14 +1057,20 @@ function obAddAccRow(name='', bal='', type='bank'){
   const row = document.createElement('div');
   row.className='ob-acc-row';
   row.innerHTML=`
-    <select class="ob-acc-input" style="max-width:36px;padding:8px 4px;text-align:center">
-      <option value="bank" ${type==='bank'?'selected':''}>🏦</option>
-      <option value="cash" ${type==='cash'?'selected':''}>💵</option>
-      <option value="invest" ${type==='invest'?'selected':''}>📈</option>
-      <option value="card" ${type==='card'?'selected':''}>💳</option>
+    <select class="ob-acc-input" style="max-width:110px;font-size:12px">
+      <option value="bank" ${type==='bank'?'selected':''}>🏦 Bank</option>
+      <option value="card" ${type==='card'?'selected':''}>💳 Card</option>
+      <option value="cash" ${type==='cash'?'selected':''}>💵 Cash €</option>
+      <option value="cash-eur" ${type==='cash-eur'?'selected':''}>💶 Cash EUR</option>
+      <option value="cash-usd" ${type==='cash-usd'?'selected':''}>💵 Cash USD</option>
+      <option value="cash-gbp" ${type==='cash-gbp'?'selected':''}>💷 Cash GBP</option>
+      <option value="invest" ${type==='invest'?'selected':''}>📈 Invest</option>
+      <option value="broker" ${type==='broker'?'selected':''}>📊 Broker</option>
+      <option value="crypto" ${type==='crypto'?'selected':''}>₿ Crypto</option>
+      <option value="savings" ${type==='savings'?'selected':''}>🏧 Savings</option>
     </select>
-    <input class="ob-acc-input" placeholder="Account name" value="${name}">
-    <input class="ob-acc-input" type="number" placeholder="Balance €" value="${bal}" style="max-width:90px">
+    <input class="ob-acc-input" placeholder="Name" value="${name}" style="flex:1">
+    <input class="ob-acc-input" type="number" placeholder="Balance" value="${bal}" style="max-width:80px">
     <button class="ob-add-btn" onclick="this.parentNode.remove()">✕</button>
   `;
   list.appendChild(row);
@@ -1064,7 +1097,7 @@ function obSaveAccounts(){
 function obStep1(){
   const all = ECATS;
   return `
-    <div class="ob-icon">🗂</div>
+    <div class="ob-icon">🗂️</div>
     <div class="ob-title">Pin your top categories</div>
     <div class="ob-sub">Select up to 5 categories you use most — they'll appear first when adding expenses.</div>
     <div class="ob-cat-grid" id="obCatGrid">
