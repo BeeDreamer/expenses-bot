@@ -13,6 +13,7 @@
 <meta name="theme-color" content="#b8860b">
 <link rel="apple-touch-icon" href="https://fav.farm/💰">
 <title>Finance</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap');
@@ -1246,12 +1247,8 @@ function getTelegramId(){
   return null;
 }
 
-const _tgId=getTelegramId();
-const _savedCfg=localStorage.getItem('fin_cfg');
-
-if(_tgId){
-  // Auto-login via Telegram WebApp
-  cfg={mode:'api',apiUrl:API_URL,userId:_tgId};
+function launchApp(userId){
+  cfg={mode:'api',apiUrl:API_URL,userId:String(userId)};
   localStorage.setItem('fin_cfg',JSON.stringify(cfg));
   document.getElementById('setup').style.display='none';
   document.getElementById('app').style.display='block';
@@ -1263,38 +1260,44 @@ if(_tgId){
   updateMonthLabel();renderChips();renderAll();
   setSyncStatus('Loading...','loading');
   setTimeout(loadData,300);
-  // Show onboarding for new users
   if(!localStorage.getItem('fin_onboarded')){
-    setTimeout(()=>startOnboarding(), 800);
+    setTimeout(()=>startOnboarding(),800);
   }
-} else if(_savedCfg){
-  // Previously logged in via browser (legacy support)
+}
+
+function showSetupInstructions(){
   try{
-    cfg=JSON.parse(_savedCfg);
-    cfg.apiUrl=API_URL;
-    if(cfg.userId){
-      document.getElementById('setup').style.display='none';
-      document.getElementById('app').style.display='block';
-      const _c=localStorage.getItem('fin_cache');
-      if(_c){try{const d=JSON.parse(_c);allTxs=d.txs||[];}catch(e){}}
-      const _a=localStorage.getItem('fin_accounts');
-      if(_a){try{allAccs=JSON.parse(_a);}catch(e){allAccs=getDefaultAccs();}}
-      else allAccs=getDefaultAccs();
-      updateMonthLabel();renderChips();renderAll();
-      setSyncStatus('Loading...','loading');
-      setTimeout(loadData,300);
+    document.getElementById('setupAutoMsg').parentNode.style.display='none';
+  }catch(e){}
+  document.getElementById('setupManualMsg').style.display='block';
+}
+
+// Try immediately
+let _tgId = getTelegramId();
+const _savedCfg = localStorage.getItem('fin_cfg');
+
+if(_tgId){
+  launchApp(_tgId);
+} else if(_savedCfg){
+  try{
+    const saved = JSON.parse(_savedCfg);
+    saved.apiUrl = API_URL;
+    if(saved.userId){
+      launchApp(saved.userId);
     } else {
       showSetupInstructions();
     }
   }catch(e){ showSetupInstructions(); }
 } else {
-  // New user opening directly in browser
-  showSetupInstructions();
-}
-
-function showSetupInstructions(){
-  document.getElementById('setupAutoMsg').parentNode.style.display='none';
-  document.getElementById('setupManualMsg').style.display='block';
+  // Retry after 500ms — Telegram WebApp might not be ready yet
+  setTimeout(()=>{
+    _tgId = getTelegramId();
+    if(_tgId){
+      launchApp(_tgId);
+    } else {
+      showSetupInstructions();
+    }
+  }, 500);
 }
 
 updateMonthLabel();
