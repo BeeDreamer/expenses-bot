@@ -538,25 +538,6 @@ def build_summary(uid):
         lines.append(f"  {cat}: {amt:.2f}EUR")
     return "\n".join(lines)
 
-async def finn_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    name = update.effective_user.first_name or "friend"
-    if not ctx.args:
-        await update.message.reply_text(
-            "Hi " + name + "! I am Finn your finance buddy!\n\n"
-            "Ask me anything:\n"
-            "/finn how am I doing this month?\n"
-            "/finn where am I overspending?\n"
-            "/finn how to save more?\n"
-            "/finn compare to last month",
-        )
-        return
-    question = " ".join(ctx.args)
-    await update.message.chat.send_action("typing")
-    summary = build_summary(uid)
-    response = ask_finn(summary, question)
-    await update.message.reply_text("Finn says:\n\n" + response)
-
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -708,8 +689,6 @@ async def settings_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ─── GROQ AI (Finn) ───────────────────────────────────────────────────────────
 import urllib.request, json as _json
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = "llama-3.1-8b-instant"
 
 def ask_finn(user_data: str, user_question: str) -> str:
     """Call Groq API with user financial data and question."""
