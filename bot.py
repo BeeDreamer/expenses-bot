@@ -507,24 +507,21 @@ async def exportxls_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ─── MESSAGE HANDLER ──────────────────────────────────────────────────────────
 
 
-# --- FINN AI (Gemini) ---
-import urllib.request
-import json as _json
-
+# --- FINN AI (Gemini Flash) ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 async def ask_finn(summary, question):
     if not GEMINI_API_KEY:
-        return "Add GEMINI_API_KEY to Railway variables."
+        return "Please add GEMINI_API_KEY to Railway variables."
     import aiohttp
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    system = "You are Finn, a friendly personal finance assistant. You have the user real spending data. Be concise, helpful, supportive. Use emojis. Max 150 words. Same language as user."
-    prompt = f"{system}\n\nUser financial data:\n{summary}\n\nUser question: {question}"
-    payload = {"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"maxOutputTokens":300}}
+    system_text = "You are Finn, a friendly personal finance assistant. You have access to user real spending data. Be concise, helpful, supportive and fun. Use emojis naturally. Max 150 words. Respond in same language as user."
+    prompt = f"{system_text}\n\nUser financial data:\n{summary}\n\nUser question: {question}"
+    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"maxOutputTokens": 300}}
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=25)) as r:
-                data = await r.json()
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=25)) as resp:
+                data = await resp.json()
                 return data["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as e:
         logger.error(f"Gemini error: {e}")
@@ -539,6 +536,28 @@ def build_summary(uid):
         lines.append(f"  {cat}: {amt:.2f}EUR")
     return "\n".join(lines)
 
+async def finn_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    name = update.effective_user.first_name or "friend"
+    if not ctx.args:
+        await update.message.reply_text(
+            f"Hi {name}! I am Finn your finance buddy!\n\n"
+            "Ask me anything:\n"
+            "/finn how am I doing this month?\n"
+            "/finn where am I overspending?\n"
+            "/finn how to save more?\n"
+            "/finn compare to last month"
+        )
+        return
+    question = " ".join(ctx.args)
+    await update.message.chat.send_action("typing")
+    try:
+        summary = build_summary(uid)
+        response = await ask_finn(summary, question)
+        await update.message.reply_text(f"Finn says:\n\n{response}")
+    except Exception as e:
+        logger.error(f"Finn error: {e}")
+        await update.message.reply_text("Something went wrong. Try again!")
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
