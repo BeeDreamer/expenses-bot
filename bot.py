@@ -513,18 +513,19 @@ import json as _json
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-def ask_finn(summary, question):
+async def ask_finn(summary, question):
     if not GEMINI_API_KEY:
         return "Add GEMINI_API_KEY to Railway variables."
+    import aiohttp
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
     system = "You are Finn, a friendly personal finance assistant. You have the user real spending data. Be concise, helpful, supportive. Use emojis. Max 150 words. Same language as user."
     prompt = f"{system}\n\nUser financial data:\n{summary}\n\nUser question: {question}"
-    payload = _json.dumps({"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"maxOutputTokens":300}}).encode()
-    req = urllib.request.Request(url, data=payload, headers={"Content-Type":"application/json"})
+    payload = {"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"maxOutputTokens":300}}
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = _json.loads(r.read())
-            return data["candidates"][0]["content"]["parts"][0]["text"]
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=25)) as r:
+                data = await r.json()
+                return data["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as e:
         logger.error(f"Gemini error: {e}")
         return "I am having trouble thinking right now. Try again in a moment!"
@@ -791,7 +792,7 @@ async def finn_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     try:
         summary = build_financial_summary(uid)
-        response = ask_finn(summary, question)
+        response = await ask_finn(summary, question)
         await update.message.reply_text(
             f"🦊 *Finn says:*\n\n{response}",
             parse_mode="Markdown"
