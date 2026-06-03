@@ -937,6 +937,8 @@ function openCatModal(cat){
 
   openModal('catModal');
 }
+
+function openTxModal(id){
   editTxId=id;
   const tx=allTxs.find(t=>t.id===id);if(!tx)return;
   document.getElementById('eAmt').value=tx.amount;
