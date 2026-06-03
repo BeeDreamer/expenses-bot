@@ -1,10 +1,8 @@
 """
-Finance Bot v3 — Multi-user with Google Sheets
-Each user gets their own sheet tab named by their Telegram user ID.
-Data is fully isolated between users.
+Finance Bot v4 — Multi-user with Google Sheets + Finn AI + Scheduler
 """
 
-import os, re, csv, io, logging
+import os, re, csv, io, logging, asyncio
 try:
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -15,20 +13,21 @@ except ImportError:
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 import pytz
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8698682076:AAGa2VWg3MN0IdJcQ64Rtuegg4Mt9GvvCYE")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "")
-GOOGLE_CREDS_FILE = os.getenv("GOOGLE_CREDS_FILE", "google_creds.json")
 SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "Finance Bot Data")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+TIMEZONE = pytz.timezone(os.getenv("BOT_TIMEZONE", "Europe/Berlin"))
+DEFAULT_REMINDER_HOUR = int(os.getenv("REMINDER_HOUR", "20"))
+DEFAULT_REMINDER_MINUTE = int(os.getenv("REMINDER_MINUTE", "0"))
 
 EXPENSE_CATS = [
-    "🛒 Groceries","🏠 Rent","🚌 Transport","📱 Subscriptions","🍽 Dining",
+    "🛒 Groceries","☕ Cafe","🏠 Rent","🚌 Transport","📱 Subscriptions","🍽 Dining",
     "👕 Clothing","💊 Health","🎮 Entertainment","🏋 Sports","✈️ Travel",
     "📚 Education","🔧 Home","💰 Investments","📦 Other"
 ]
@@ -49,13 +48,10 @@ def get_spreadsheet():
         import gspread, json
         from google.oauth2.service_account import Credentials
         scopes = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
-        # Try env variable first, then file
         creds_json = os.getenv("GOOGLE_CREDS_JSON")
         if creds_json:
             creds_info = json.loads(creds_json)
             creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
-        elif os.path.exists(GOOGLE_CREDS_FILE):
-            creds = Credentials.from_service_account_file(GOOGLE_CREDS_FILE, scopes=scopes)
         else:
             logger.warning("No Google credentials found")
             return None
@@ -67,7 +63,6 @@ def get_spreadsheet():
         return None
 
 def get_user_sheet(user_id: int):
-    """Get or create a sheet tab for this user."""
     sp = get_spreadsheet()
     if not sp:
         return None
@@ -76,7 +71,6 @@ def get_user_sheet(user_id: int):
         sheet = sp.worksheet(sheet_name)
     except Exception:
         try:
-            import gspread
             sheet = sp.add_worksheet(title=sheet_name, rows=5000, cols=8)
             sheet.append_row(HEADERS)
         except Exception as e:
@@ -97,7 +91,6 @@ def read_user_tx(user_id: int):
 def write_user_tx(user_id: int, date, amount, category, description, tx_type):
     sheet = get_user_sheet(user_id)
     if not sheet:
-        logger.warning(f"No sheet for user {user_id}, using local fallback")
         _write_local(user_id, date, amount, category, description, tx_type)
         return
     try:
@@ -109,7 +102,7 @@ def write_user_tx(user_id: int, date, amount, category, description, tx_type):
         logger.error(f"Write error: {e}")
         _write_local(user_id, date, amount, category, description, tx_type)
 
-# ─── LOCAL FALLBACK (if no Google Sheets) ─────────────────────────────────────
+# ─── LOCAL FALLBACK ────────────────────────────────────────────────────────────
 def _local_path(user_id): return f"/tmp/{user_id}.csv"
 
 def _ensure_local(user_id):
@@ -129,7 +122,6 @@ def _read_local(user_id):
         return list(csv.DictReader(f))
 
 def get_tx(user_id):
-    """Read from Google Sheets or local fallback."""
     rows = read_user_tx(user_id)
     if not rows:
         rows = _read_local(user_id)
@@ -139,13 +131,81 @@ def get_tx(user_id):
 def get_month_stats(user_id, month):
     rows = get_tx(user_id)
     txs = [r for r in rows if r.get("Month") == month]
-    exp = sum(float(r["Amount"]) for r in txs if r["Type"] == "expense")
-    inc = sum(float(r["Amount"]) for r in txs if r["Type"] == "income")
+    exp = sum(float(r["Amount"]) for r in txs if str(r.get("Type","")).lower() in ("expense","расход"))
+    inc = sum(float(r["Amount"]) for r in txs if str(r.get("Type","")).lower() in ("income","доход"))
     by_cat = {}
     for r in txs:
-        if r["Type"] == "expense":
+        if str(r.get("Type","")).lower() in ("expense","расход"):
             by_cat[r["Category"]] = by_cat.get(r["Category"],0) + float(r["Amount"])
     return exp, inc, by_cat
+
+# ─── FINN AI ───────────────────────────────────────────────────────────────────
+async def ask_finn(summary: str, question: str) -> str:
+    if not GEMINI_API_KEY:
+        return "Please add GEMINI_API_KEY to Railway variables."
+    try:
+        import aiohttp
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        system_text = (
+            "You are Finn, a friendly and witty personal finance assistant in a Telegram bot. "
+            "You have the user's real spending data. Be concise, helpful and supportive. "
+            "Use emojis naturally. Max 150 words. Respond in same language as user."
+        )
+        prompt = f"{system_text}\n\nUser financial data:\n{summary}\n\nUser question: {question}"
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"maxOutputTokens": 300}
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=25)) as resp:
+                data = await resp.json()
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception as e:
+        logger.error(f"Gemini error: {e}")
+        return "I'm having trouble thinking right now. Try again in a moment!"
+
+def build_finn_summary(uid: int) -> str:
+    now = datetime.now()
+    cur = now.strftime("%Y-%m")
+    prev = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    exp_c, inc_c, by_cat = get_month_stats(uid, cur)
+    exp_p, inc_p, _ = get_month_stats(uid, prev)
+    top = sorted(by_cat.items(), key=lambda x: x[1], reverse=True)[:5]
+    lines = [
+        f"Month: {now.strftime('%B %Y')}",
+        f"Expenses: {exp_c:.2f}EUR", f"Income: {inc_c:.2f}EUR",
+        f"Balance: {inc_c-exp_c:+.2f}EUR",
+        f"Last month expenses: {exp_p:.2f}EUR",
+        "Top spending categories:"
+    ]
+    for cat, amt in top:
+        lines.append(f"  {cat}: {amt:.2f}EUR")
+    return "\n".join(lines)
+
+async def finn_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    name = update.effective_user.first_name or "friend"
+    if not ctx.args:
+        await update.message.reply_text(
+            f"Hi {name}! I'm Finn 🦊 your personal finance buddy!\n\n"
+            "Ask me anything:\n"
+            "`/finn how am I doing this month?`\n"
+            "`/finn where am I overspending?`\n"
+            "`/finn how can I save more?`\n"
+            "`/finn compare to last month`\n"
+            "`/finn give me a saving tip`",
+            parse_mode="Markdown"
+        )
+        return
+    question = " ".join(ctx.args)
+    await update.message.chat.send_action("typing")
+    try:
+        summary = build_finn_summary(uid)
+        response = await ask_finn(summary, question)
+        await update.message.reply_text(f"🦊 Finn says:\n\n{response}")
+    except Exception as e:
+        logger.error(f"Finn cmd error: {e}")
+        await update.message.reply_text("Something went wrong. Try again!")
 
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
 def cat_keyboard(tx_type="expense"):
@@ -167,7 +227,7 @@ def main_keyboard():
         InlineKeyboardButton("📈 /compare", callback_data="cmd:compare"),
     ])
     buttons.append([
-        InlineKeyboardButton("📤 /export", callback_data="cmd:export"),
+        InlineKeyboardButton("🦊 /finn", callback_data="cmd:finn"),
         InlineKeyboardButton("❓ /help", callback_data="cmd:help"),
     ])
     return InlineKeyboardMarkup(buttons)
@@ -176,29 +236,22 @@ def main_keyboard():
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     name = update.effective_user.first_name or "there"
-    # Create their sheet on first use
     sheet = get_user_sheet(uid)
     storage = "Google Sheets ✅" if sheet else "local storage ⚠️"
     await update.message.reply_text(
         f"👋 Hi {name}! Welcome to *Finance Bot*\n\n"
-        f"Your data storage: {storage}\n"
-        f"Your data is *private* — only you can see it.\n\n"
+        f"Storage: {storage}\n\n"
         "📝 *How to add transactions:*\n"
         "`coffee 4.5` — expense\n"
-        "`salary +3411` — income\n"
-        "`coffee 4.5 25.05` — with custom date\n\n"
+        "`salary +3411` — income\n\n"
         "📋 *Commands:*\n"
         "/stats — monthly breakdown\n"
         "/compare — vs last month\n"
+        "/finn — AI finance assistant\n"
+        "/settings — notification time\n"
         "/export — download CSV\n"
-        "/exportxls — download Excel report\n"
-        "/find coffee — search transactions\n"
         "/last — last 10 transactions\n"
-        "/addq coffee 4.5 Dining — save quick template\n"
-        "/q coffee — use quick template\n"
-        "/budget Groceries 400 — set spending limit\n"
-        "/deletedata — delete all your data\n\n"
-        "Your data belongs to you and is never shared.",
+        "/deletedata — delete all data",
         parse_mode="Markdown",
         reply_markup=main_keyboard()
     )
@@ -214,17 +267,14 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "`coffee 4.5 25.05` → with date\n\n"
             "*Commands:*\n"
             "/stats `[YYYY-MM]` — monthly stats\n"
-            "/compare — this month vs last month\n"
-            "/export — download CSV\n"
+            "/compare — this vs last month\n"
+            "/finn — AI assistant\n"
+            "/settings `HH:MM` — set reminder time\n"
+            "/export — CSV export\n"
             "/find `query` — search\n"
             "/last — last 10 transactions\n"
-            "/addq `name amount category` — save template\n"
-            "/q `name` — use template\n"
-            "/budget `category limit` — set budget\n"
-            "/deletedata — delete all your data\n\n"
-            "*Privacy:*\n"
-            "Your data is stored in a private sheet tab.\n"
-            "No other user can access it.",
+            "/budget `category limit` — spending limit\n"
+            "/deletedata — delete all data",
             parse_mode="Markdown"
         )
 
@@ -284,8 +334,7 @@ async def export_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await msg.reply_document(
             document=io.BytesIO(output.getvalue().encode("utf-8")),
             filename=filename,
-            caption=f"📤 Your transactions — {len(rows)} records\n_Only you received this file._",
-            parse_mode="Markdown"
+            caption=f"📤 Your transactions — {len(rows)} records",
         )
 
 async def find_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -302,7 +351,7 @@ async def find_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     found = list(reversed(found[-10:]))
     lines = [f"🔍 *Results for «{query}»*\n"]
     for r in found:
-        sign = "+" if r["Type"]=="income" else "-"
+        sign = "+" if str(r.get("Type","")).lower() in ("income","доход") else "-"
         lines.append(f"{r['Date']} | {sign}{r['Amount']}€ | {r['Category']} | {r['Description']}")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -315,7 +364,7 @@ async def last_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     lines = ["📋 *Last 10 transactions:*\n"]
     for r in last:
-        sign = "+" if r["Type"]=="income" else "-"
+        sign = "+" if str(r.get("Type","")).lower() in ("income","доход") else "-"
         lines.append(f"{r['Date']} | {sign}{r['Amount']}€ | {r['Category']} | {r['Description']}")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -326,7 +375,6 @@ async def budget_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             limit = float(ctx.args[-1])
             matched = next((c for c in EXPENSE_CATS if cat_q in c.lower()), " ".join(ctx.args[:-1]))
-            # Store budget as special row
             write_user_tx(uid, datetime.now(), limit, matched, "__budget__", "budget")
             await update.message.reply_text(f"✅ Budget set: *{matched}* → {limit:.2f}€/month", parse_mode="Markdown")
             return
@@ -347,218 +395,87 @@ async def budget_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines.append(f"{status} {cat}\n`{bar}` {pct:.0f}%\n{spent:.2f}€ / {lim:.2f}€\n")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
-async def addq_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if not ctx.args or len(ctx.args)<3:
-        await update.message.reply_text("Usage: `/addq coffee 4.50 Dining`", parse_mode="Markdown")
-        return
-    name = ctx.args[0].lower()
-    try: amount = float(ctx.args[1])
-    except: await update.message.reply_text("Invalid amount."); return
-    cat_q = " ".join(ctx.args[2:]).lower()
-    cat = next((c for c in EXPENSE_CATS+INCOME_CATS if cat_q in c.lower()), " ".join(ctx.args[2:]))
-    write_user_tx(uid, datetime.now(), amount, cat, f"__template__{name}", "template")
-    await update.message.reply_text(f"✅ Template saved: `{name}` = {amount:.2f}€ ({cat})", parse_mode="Markdown")
-
-async def q_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def settings_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     rows = get_tx(uid)
-    templates = {r["Description"].replace("__template__",""): {"amount":float(r["Amount"]),"category":r["Category"]} for r in rows if r.get("Type")=="template"}
-    if not ctx.args:
-        if not templates:
-            await update.message.reply_text("No templates. Use `/addq coffee 4.50 Dining`", parse_mode="Markdown")
-            return
-        lines = ["⚡ *Quick Templates:*\n"]
-        for name,v in templates.items():
-            lines.append(f"`/q {name}` — {v['amount']:.2f}€ ({v['category']})")
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-        return
-    name = ctx.args[0].lower()
-    if name not in templates:
-        await update.message.reply_text(f"Template `{name}` not found.", parse_mode="Markdown")
-        return
-    t = templates[name]
-    write_user_tx(uid, datetime.now(), t["amount"], t["category"], name, "expense")
-    await update.message.reply_text(f"⚡ *Quick add:* -{t['amount']:.2f}€ ({t['category']})", parse_mode="Markdown")
+    current = next((r for r in rows if r.get('Type') == 'setting' and r.get('Category') == 'reminder_time'), None)
+    current_time = current['Description'] if current else "20:00"
+    if ctx.args and len(ctx.args) == 1:
+        try:
+            parts = ctx.args[0].split(':')
+            hour = int(parts[0])
+            minute = int(parts[1]) if len(parts) > 1 else 0
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError
+            sheet = get_user_sheet(uid)
+            if sheet:
+                all_rows = sheet.get_all_values()
+                for i, row in enumerate(all_rows[1:], 2):
+                    if len(row) > 4 and row[4] == 'setting':
+                        sheet.delete_rows(i)
+                        break
+                sheet.append_row([datetime.now().strftime("%d.%m.%Y"), 0, 'reminder_time', f"{hour:02d}:{minute:02d}", 'setting', datetime.now().strftime("%Y-%m"), str(uid)])
+            await update.message.reply_text(
+                f"✅ Reminder time set to *{hour:02d}:{minute:02d}*\n\n"
+                f"• Daily reminder at {hour:02d}:{minute:02d}\n"
+                f"• Weekly summary on Sundays at {hour:02d}:{minute:02d}\n"
+                f"• Monthly report on the 1st at 20:00",
+                parse_mode="Markdown"
+            )
+        except:
+            await update.message.reply_text("❌ Invalid format. Use: `/settings 19:30`", parse_mode="Markdown")
+    else:
+        await update.message.reply_text(
+            f"⚙️ *Notification Settings*\n\n"
+            f"Current reminder time: *{current_time}*\n\n"
+            f"To change: `/settings HH:MM`\n"
+            f"Example: `/settings 19:30`\n\n"
+            f"*Notifications:*\n"
+            f"🌙 Daily reminder at your set time\n"
+            f"📊 Weekly summary every Sunday\n"
+            f"📅 Monthly report on the 1st at 20:00",
+            parse_mode="Markdown"
+        )
+
+async def deletedata_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Yes, delete everything", callback_data="deleteconfirm:yes"),
+        InlineKeyboardButton("❌ Cancel", callback_data="deleteconfirm:no"),
+    ]])
+    await update.message.reply_text(
+        "⚠️ *Are you sure?*\n\nThis will permanently delete ALL your transactions and data.",
+        parse_mode="Markdown", reply_markup=keyboard
+    )
 
 async def exportxls_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     rows = get_tx(uid)
-    rows = [r for r in rows if r.get("Type") not in ("budget","template")]
+    rows = [r for r in rows if str(r.get("Type","")).lower() not in ("budget","template","setting")]
     if not rows:
         await update.message.reply_text("No transactions to export yet.")
         return
     if not XLSX_OK:
         await export_cmd(update, ctx)
         return
-
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Transactions"
-
-    # Styles
-    gold = "B8860B"
-    dark = "1A1A1A"
-    light_gold = "FEF9EC"
-    light_gray = "F5F5F5"
-    red_fill = "FFF0F0"
-    green_fill = "F0FFF4"
-
-    header_font = Font(bold=True, color="FFFFFF", size=11)
-    header_fill = PatternFill("solid", fgColor=dark)
-    header_align = Alignment(horizontal="center", vertical="center")
-
-    title_font = Font(bold=True, color=gold, size=14)
-    ws.merge_cells("A1:G1")
-    ws["A1"] = f"💰 Finance Report — {update.effective_user.first_name or 'User'}"
-    ws["A1"].font = title_font
-    ws["A1"].alignment = Alignment(horizontal="center")
-    ws["A1"].fill = PatternFill("solid", fgColor="1A1A1A")
-
-    ws.merge_cells("A2:G2")
-    from datetime import datetime as dt
-    ws["A2"] = f"Generated: {dt.now().strftime('%d.%m.%Y %H:%M')}"
-    ws["A2"].font = Font(color="888888", size=10, italic=True)
-    ws["A2"].alignment = Alignment(horizontal="center")
-    ws["A2"].fill = PatternFill("solid", fgColor="1A1A1A")
-
-    ws.append([])  # row 3 empty
-
-    # Headers
     headers = ["Date", "Amount (€)", "Category", "Description", "Type", "Month"]
     ws.append(headers)
-    for col, h in enumerate(headers, 1):
-        cell = ws.cell(row=4, column=col)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = header_align
-
-    # Data
     for row in rows:
-        tx_type = row.get("Type","expense")
+        tx_type = str(row.get("Type","expense")).lower()
         amount = float(row.get("Amount",0))
-        ws.append([
-            row.get("Date",""),
-            amount if tx_type=="income" else -amount,
-            row.get("Category",""),
-            row.get("Description",""),
-            tx_type.capitalize(),
-            row.get("Month",""),
-        ])
-        r = ws.max_row
-        fill_color = green_fill if tx_type=="income" else red_fill
-        for col in range(1,7):
-            ws.cell(r,col).fill = PatternFill("solid", fgColor=fill_color)
-            ws.cell(r,col).alignment = Alignment(vertical="center")
-        ws.cell(r,2).number_format = '#,##0.00 "€"'
-
-    # Summary sheet
-    ws2 = wb.create_sheet("Summary")
-    ws2["A1"] = "Summary by Month"
-    ws2["A1"].font = Font(bold=True, color=gold, size=13)
-    ws2["A1"].fill = PatternFill("solid", fgColor=dark)
-
-    by_month = {}
-    for row in rows:
-        m = row.get("Month","")
-        t = row.get("Type","expense")
-        amt = float(row.get("Amount",0))
-        if m not in by_month: by_month[m]={"income":0,"expense":0}
-        by_month[m][t] = by_month[m].get(t,0)+amt
-
-    ws2.append([])
-    ws2.append(["Month","Income (€)","Expenses (€)","Balance (€)"])
-    for col in range(1,5):
-        ws2.cell(3,col).font = header_font
-        ws2.cell(3,col).fill = header_fill
-        ws2.cell(3,col).alignment = header_align
-
-    for month in sorted(by_month.keys()):
-        inc = by_month[month].get("income",0)
-        exp = by_month[month].get("expense",0)
-        bal = inc - exp
-        ws2.append([month, inc, exp, bal])
-        r = ws2.max_row
-        ws2.cell(r,2).font = Font(color="16A34A", bold=True)
-        ws2.cell(r,3).font = Font(color="DC2626", bold=True)
-        ws2.cell(r,4).font = Font(color=gold if bal>=0 else "DC2626", bold=True)
-        for col in range(1,5):
-            ws2.cell(r,col).fill = PatternFill("solid", fgColor=light_gray)
-            ws2.cell(r,col).number_format = '#,##0.00 "€"' if col>1 else "General"
-
-    # Column widths
-    for ws_sheet in [ws, ws2]:
-        for col in ws_sheet.columns:
-            max_len = max(len(str(c.value or "")) for c in col)
-            ws_sheet.column_dimensions[get_column_letter(col[0].column)].width = min(max_len+4, 30)
-
-    # Save
+        ws.append([row.get("Date",""), amount if tx_type in ("income","доход") else -amount,
+                   row.get("Category",""), row.get("Description",""), tx_type, row.get("Month","")])
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
-    filename = f"finances_{dt.now().strftime('%Y%m%d')}.xlsx"
-    await update.message.reply_document(
-        document=output,
-        filename=filename,
-        caption=f"Your Finance Report: {len(rows)} transactions. Sheet 1: Transactions, Sheet 2: Monthly summary.",  # noqa
-        parse_mode="Markdown"
-    )
+    filename = f"finances_{datetime.now().strftime('%Y%m%d')}.xlsx"
+    await update.message.reply_document(document=output, filename=filename,
+        caption=f"Your Finance Report: {len(rows)} transactions.")
 
 # ─── MESSAGE HANDLER ──────────────────────────────────────────────────────────
-
-
-# --- FINN AI (Gemini Flash) ---
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-
-async def ask_finn(summary, question):
-    if not GEMINI_API_KEY:
-        return "Please add GEMINI_API_KEY to Railway variables."
-    import aiohttp
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    system_text = "You are Finn, a friendly personal finance assistant. You have access to user real spending data. Be concise, helpful, supportive and fun. Use emojis naturally. Max 150 words. Respond in same language as user."
-    prompt = f"{system_text}\n\nUser financial data:\n{summary}\n\nUser question: {question}"
-    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"maxOutputTokens": 300}}
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=25)) as resp:
-                data = await resp.json()
-                return data["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception as e:
-        logger.error(f"Gemini error: {e}")
-        return "I am having trouble thinking right now. Try again in a moment!"
-
-def build_summary(uid):
-    now = datetime.now()
-    exp, inc, by_cat = get_month_stats(uid, now.strftime("%Y-%m"))
-    top = sorted(by_cat.items(), key=lambda x: x[1], reverse=True)[:5]
-    lines = [f"Month: {now.strftime('%B %Y')}", f"Expenses: {exp:.2f}EUR", f"Income: {inc:.2f}EUR", f"Balance: {inc-exp:+.2f}EUR", "Top categories:"]
-    for cat, amt in top:
-        lines.append(f"  {cat}: {amt:.2f}EUR")
-    return "\n".join(lines)
-
-async def finn_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    name = update.effective_user.first_name or "friend"
-    if not ctx.args:
-        await update.message.reply_text(
-            f"Hi {name}! I am Finn your finance buddy!\n\n"
-            "Ask me anything:\n"
-            "/finn how am I doing this month?\n"
-            "/finn where am I overspending?\n"
-            "/finn how to save more?\n"
-            "/finn compare to last month"
-        )
-        return
-    question = " ".join(ctx.args)
-    await update.message.chat.send_action("typing")
-    try:
-        summary = build_summary(uid)
-        response = await ask_finn(summary, question)
-        await update.message.reply_text(f"Finn says:\n\n{response}")
-    except Exception as e:
-        logger.error(f"Finn error: {e}")
-        await update.message.reply_text("Something went wrong. Try again!")
-
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     uid = update.effective_user.id
@@ -608,7 +525,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         cmd = query.data.split(":")[1]
         if cmd=="stats": await stats_cmd(update,ctx)
         elif cmd=="compare": await compare_cmd(update,ctx)
-        elif cmd=="export": await export_cmd(update,ctx)
+        elif cmd=="finn": await finn_cmd(update,ctx)
         elif cmd=="help": await help_cmd(update,ctx)
         return
 
@@ -622,8 +539,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     sp.del_worksheet(sheet)
                 except: pass
             try:
-                import os as _os
-                _os.remove(f"/tmp/{uid}.csv")
+                os.remove(f"/tmp/{uid}.csv")
             except: pass
             await query.edit_message_text("✅ All your data has been deleted.")
         else:
@@ -648,306 +564,81 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-async def deletedata_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Yes, delete everything", callback_data="deleteconfirm:yes"),
-        InlineKeyboardButton("❌ Cancel", callback_data="deleteconfirm:no"),
-    ]])
-    await update.message.reply_text(
-        "⚠️ *Are you sure?*\n\nThis will permanently delete ALL your transactions and data. This cannot be undone.",
-        parse_mode="Markdown", reply_markup=keyboard
-    )
-
-async def settings_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    rows = get_tx(uid)
-    current = next((r for r in rows if r.get('Type') == 'setting' and r.get('Category') == 'reminder_time'), None)
-    current_time = current['Description'] if current else "20:00"
-    if ctx.args and len(ctx.args) == 1:
-        try:
-            parts = ctx.args[0].split(':')
-            hour = int(parts[0])
-            minute = int(parts[1]) if len(parts) > 1 else 0
-            if not (0 <= hour <= 23 and 0 <= minute <= 59):
-                raise ValueError
-            sheet = get_user_sheet(uid)
-            if sheet:
-                all_rows = sheet.get_all_values()
-                for i, row in enumerate(all_rows[1:], 2):
-                    if len(row) > 4 and row[4] == 'setting':
-                        sheet.delete_rows(i)
-                        break
-                sheet.append_row([
-                    datetime.now().strftime("%d.%m.%Y"), 0,
-                    'reminder_time', f"{hour:02d}:{minute:02d}",
-                    'setting', datetime.now().strftime("%Y-%m"), str(uid)
-                ])
-            await update.message.reply_text(
-                f"✅ Reminder time set to *{hour:02d}:{minute:02d}*\n\n"
-                f"• Daily reminder at {hour:02d}:{minute:02d}\n"
-                f"• Weekly summary on Sundays at {hour:02d}:{minute:02d}\n"
-                f"• Monthly report on the 1st at 20:00",
-                parse_mode="Markdown"
-            )
-        except:
-            await update.message.reply_text("❌ Invalid format. Use: `/settings 19:30`", parse_mode="Markdown")
-    else:
-        await update.message.reply_text(
-            f"⚙️ *Notification Settings*\n\n"
-            f"Current reminder time: *{current_time}*\n\n"
-            f"To change: `/settings HH:MM`\n"
-            f"Example: `/settings 19:30`\n\n"
-            f"*Notifications:*\n"
-            f"🌙 Daily reminder at your set time\n"
-            f"📊 Weekly summary every Sunday\n"
-            f"📅 Monthly report on the 1st at 20:00",
-            parse_mode="Markdown"
-        )
-
-
-# ─── GROQ AI (Finn) ───────────────────────────────────────────────────────────
-import urllib.request, json as _json
-
-
-def ask_finn(user_data: str, user_question: str) -> str:
-    """Call Groq API with user financial data and question."""
-    if not GROQ_API_KEY:
-        return "⚠️ Groq API key not configured. Add GROQ_API_KEY to Railway variables."
-    
-    system_prompt = """You are Finn 🦊, a friendly and witty personal finance assistant built into a Telegram expense tracker. 
-You have access to the user's real financial data. Be conversational, supportive, and occasionally funny — like a smart friend who happens to know finance.
-Keep responses concise (max 200 words). Use emojis naturally. Give concrete actionable advice based on their actual data.
-Never be judgmental about spending. If they overspend, be gently curious, not preachy.
-Respond in the same language the user writes in."""
-
-    user_prompt = f"""Here is the user's financial data:
-{user_data}
-
-User question: {user_question}
-
-Give a helpful, friendly response based on their actual data."""
-
-    payload = _json.dumps({
-        "model": GROQ_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "max_tokens": 400,
-        "temperature": 0.7
-    }).encode('utf-8')
-
-    req = urllib.request.Request(
-        "https://api.groq.com/openai/v1/chat/completions",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {GROQ_API_KEY}"
-        }
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = _json.loads(resp.read())
-            return data['choices'][0]['message']['content']
-    except Exception as e:
-        logger.error(f"Groq error: {e}")
-        return "😅 I'm having trouble thinking right now. Try again in a moment!"
-
-def build_financial_summary(user_id: int) -> str:
-    """Build a financial summary string for Finn."""
-    now = datetime.now()
-    cur_month = now.strftime("%Y-%m")
-    prev_month = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
-    
-    exp_cur, inc_cur, by_cat_cur = get_month_stats(user_id, cur_month)
-    exp_prev, inc_prev, _ = get_month_stats(user_id, prev_month)
-    
-    rows = get_tx(user_id)
-    total_txs = len([r for r in rows if r.get('Type') not in ('budget', 'template', 'setting')])
-    
-    top_cats = sorted(by_cat_cur.items(), key=lambda x: x[1], reverse=True)[:5]
-    
-    summary = f"""
-CURRENT MONTH ({cur_month}):
-- Total expenses: {exp_cur:.2f}€
-- Total income: {inc_cur:.2f}€  
-- Balance: {inc_cur - exp_cur:+.2f}€
-- Transactions: {len([r for r in rows if r.get('Month') == cur_month])}
-
-LAST MONTH ({prev_month}):
-- Expenses: {exp_prev:.2f}€
-- Income: {inc_prev:.2f}€
-
-TOP SPENDING CATEGORIES THIS MONTH:
-{chr(10).join(f"- {cat}: {amt:.2f}€" for cat, amt in top_cats) if top_cats else "- No expenses yet"}
-
-TOTAL TRACKED TRANSACTIONS: {total_txs}
-"""
-    return summary.strip()
-
-async def finn_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Finn AI assistant command."""
-    uid = update.effective_user.id
-    name = update.effective_user.first_name or "there"
-    
-    if not ctx.args:
-        await update.message.reply_text(
-            f"Hey {name}! I'm Finn 🦊 your personal finance assistant!\n\n"
-            "Ask me anything about your finances:\n"
-            "`/finn how am I doing this month?`\n"
-            "`/finn where am I overspending?`\n"
-            "`/finn how can I save more?`\n"
-            "`/finn compare my spending to last month`\n"
-            "`/finn give me a spending tip`",
-            parse_mode="Markdown"
-        )
-        return
-    
-    question = " ".join(ctx.args)
-    
-    # Show typing indicator
-    await update.message.chat.send_action("typing")
-    
-    try:
-        summary = build_financial_summary(uid)
-        response = await ask_finn(summary, question)
-        await update.message.reply_text(
-            f"🦊 *Finn says:*\n\n{response}",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logger.error(f"Finn error: {e}")
-        await update.message.reply_text("😅 Something went wrong. Try again!")
-
-
-# ─── SCHEDULER FUNCTIONS ──────────────────────────────────────────────────────
-
-TIMEZONE = pytz.timezone(os.getenv("BOT_TIMEZONE", "Europe/Berlin"))
-DEFAULT_REMINDER_HOUR = int(os.getenv("REMINDER_HOUR", "20"))
-DEFAULT_REMINDER_MINUTE = int(os.getenv("REMINDER_MINUTE", "0"))
-
+# ─── SCHEDULER ────────────────────────────────────────────────────────────────
 def get_all_user_ids():
-    """Get all user IDs from spreadsheet tabs."""
     sp = get_spreadsheet()
     if not sp:
         return []
     try:
-        user_ids = []
-        for ws in sp.worksheets():
-            if ws.title.startswith('user_'):
-                try:
-                    uid = int(ws.title.replace('user_', ''))
-                    user_ids.append(uid)
-                except:
-                    pass
-        return user_ids
+        return [int(ws.title.replace('user_', '')) for ws in sp.worksheets() if ws.title.startswith('user_')]
     except Exception as e:
         logger.error(f"get_all_user_ids error: {e}")
         return []
 
 async def send_daily_reminder(app):
-    """Send daily expense reminder — respects per-user time settings."""
     user_ids = get_all_user_ids()
-    now = datetime.now(TIMEZONE)
-    current_hour = now.hour
-    current_minute = now.minute
-    logger.info(f"Daily reminder check @ {current_hour:02d}:{current_minute:02d} → {len(user_ids)} users")
+    logger.info(f"Daily reminder → {len(user_ids)} users")
     for uid in user_ids:
         try:
-            # Check user's custom time setting
-            rows = get_tx(uid)
-            setting = next((r for r in rows if r.get('Type') == 'setting' and r.get('Category') == 'reminder_time'), None)
-            if setting:
-                parts = setting.get('Description','20:00').split(':')
-                user_hour = int(parts[0])
-                user_minute = int(parts[1]) if len(parts)>1 else 0
-                if current_hour != user_hour or abs(current_minute - user_minute) > 5:
-                    continue  # not their time yet
-            await app.bot.send_message(
-                chat_id=uid,
-                text=(
-                    "🌙 *Evening check-in!*\n\n"
-                    "Don't forget to log today's expenses 📝\n\n"
-                    "Just send me:\n"
-                    "`coffee 4.5` — expense\n"
-                    "`salary +3000` — income\n\n"
-                    "Use /stats to see today's summary.\n"
-                    "To change reminder time: /settings"
-                ),
-                parse_mode="Markdown"
-            )
+            await app.bot.send_message(chat_id=uid,
+                text="🌙 *Evening check-in!*\n\nDon't forget to log today's expenses 📝\n\n"
+                     "Just send me:\n`coffee 4.5` — expense\n`salary +3000` — income\n\n"
+                     "Use /stats to see today's summary.",
+                parse_mode="Markdown")
         except Exception as e:
             logger.warning(f"Daily reminder failed for {uid}: {e}")
 
 async def send_weekly_stats(app):
-    """Send weekly stats every Sunday at 8 PM."""
     user_ids = get_all_user_ids()
     now = datetime.now(TIMEZONE)
-    logger.info(f"Weekly stats → {len(user_ids)} users")
     for uid in user_ids:
         try:
             rows = get_tx(uid)
             week_txs = []
             for r in rows:
                 try:
-                    date_str = r.get('Date', r.get('Дата', ''))
+                    date_str = r.get('Date','')
                     if '.' in date_str:
                         p = date_str.split('.')
                         yr = int(p[2]) if len(p[2])==4 else 2000+int(p[2])
                         tx_date = datetime(yr, int(p[1]), int(p[0]))
                         if tx_date.date() >= (now - timedelta(days=7)).date():
                             week_txs.append(r)
-                except:
-                    pass
-
-            exp = sum(float(r.get('Amount', r.get('Сумма (€)', 0))) for r in week_txs
-                     if str(r.get('Type', r.get('Тип',''))).lower() in ('expense','расход'))
-            inc = sum(float(r.get('Amount', r.get('Сумма (€)', 0))) for r in week_txs
-                     if str(r.get('Type', r.get('Тип',''))).lower() in ('income','доход'))
+                except: pass
+            exp = sum(float(r.get('Amount',0)) for r in week_txs if str(r.get('Type','')).lower() in ('expense','расход'))
+            inc = sum(float(r.get('Amount',0)) for r in week_txs if str(r.get('Type','')).lower() in ('income','доход'))
             by_cat = {}
             for r in week_txs:
-                t = str(r.get('Type', r.get('Тип',''))).lower()
-                if t in ('expense','расход'):
-                    cat = r.get('Category', r.get('Категория','Other'))
-                    by_cat[cat] = by_cat.get(cat, 0) + float(r.get('Amount', r.get('Сумма (€)', 0)))
+                if str(r.get('Type','')).lower() in ('expense','расход'):
+                    cat = r.get('Category','Other')
+                    by_cat[cat] = by_cat.get(cat,0) + float(r.get('Amount',0))
             top = sorted(by_cat.items(), key=lambda x: x[1], reverse=True)[:3]
-
-            date_from = (now - timedelta(days=7)).strftime('%d.%m')
-            date_to = now.strftime('%d.%m')
-            lines = [f"📊 *Weekly Summary* ({date_from} — {date_to})\n"]
-            lines.append(f"💸 Spent: *{exp:.2f}€*")
-            if inc > 0:
-                lines.append(f"💚 Earned: *{inc:.2f}€*")
+            lines = [f"📊 *Weekly Summary* ({(now-timedelta(days=7)).strftime('%d.%m')} — {now.strftime('%d.%m')})\n",
+                     f"💸 Spent: *{exp:.2f}€*"]
+            if inc > 0: lines.append(f"💚 Earned: *{inc:.2f}€*")
             lines.append(f"📈 Net: *{inc-exp:+.2f}€*\n")
             if top:
                 lines.append("*Top categories:*")
                 for cat, amt in top:
-                    pct = amt/exp*100 if exp > 0 else 0
-                    lines.append(f"  {cat}: {amt:.2f}€ ({pct:.0f}%)")
-            lines.append("\nUse /stats for full breakdown.")
-
+                    lines.append(f"  {cat}: {amt:.2f}€")
             await app.bot.send_message(chat_id=uid, text='\n'.join(lines), parse_mode="Markdown")
         except Exception as e:
             logger.warning(f"Weekly stats failed for {uid}: {e}")
 
 async def send_monthly_stats(app):
-    """Send monthly stats on the 1st of each month at 8 AM."""
     user_ids = get_all_user_ids()
     now = datetime.now(TIMEZONE)
     last_month = (now.replace(day=1) - timedelta(days=1))
     month_key = last_month.strftime("%Y-%m")
     month_name = last_month.strftime("%B %Y")
-    logger.info(f"Monthly stats → {len(user_ids)} users")
     for uid in user_ids:
         try:
             exp, inc, by_cat = get_month_stats(uid, month_key)
             if exp == 0 and inc == 0:
-                continue  # skip users with no data
+                continue
             top = sorted(by_cat.items(), key=lambda x: x[1], reverse=True)[:5]
-
-            lines = [f"📅 *Monthly Report — {month_name}*\n"]
-            lines.append(f"💸 Total spent: *{exp:.2f}€*")
+            lines = [f"📅 *Monthly Report — {month_name}*\n",
+                     f"💸 Total spent: *{exp:.2f}€*"]
             if inc > 0:
                 lines.append(f"💚 Total earned: *{inc:.2f}€*")
                 lines.append(f"📈 Balance: *{inc-exp:+.2f}€*")
@@ -959,7 +650,6 @@ async def send_monthly_stats(app):
                     bar = "▓" * min(int(amt/50), 8)
                     lines.append(f"{cat}: *{amt:.2f}€* ({pct:.0f}%) {bar}")
             lines.append("\nGreat job tracking! Keep it up 💪")
-
             await app.bot.send_message(chat_id=uid, text='\n'.join(lines), parse_mode="Markdown")
         except Exception as e:
             logger.warning(f"Monthly stats failed for {uid}: {e}")
@@ -975,28 +665,33 @@ def main():
     app.add_handler(CommandHandler("find", find_cmd))
     app.add_handler(CommandHandler("last", last_cmd))
     app.add_handler(CommandHandler("budget", budget_cmd))
-    app.add_handler(CommandHandler("addq", addq_cmd))
-    app.add_handler(CommandHandler("q", q_cmd))
+    app.add_handler(CommandHandler("settings", settings_cmd))
     app.add_handler(CommandHandler("deletedata", deletedata_cmd))
     app.add_handler(CommandHandler("exportxls", exportxls_cmd))
-    app.add_handler(CommandHandler("settings", settings_cmd))
-    app.add_handler(CommandHandler("finn", finn_cmd))
     app.add_handler(CommandHandler("finn", finn_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # ── Scheduler ──
-    # Scheduler setup - runs after bot starts
+    # Scheduler — runs inside app event loop
     async def post_init(application):
-        scheduler = AsyncIOScheduler(timezone=TIMEZONE)
-        scheduler.add_job(lambda: application.create_task(send_daily_reminder(application)), 'cron', minute='*/5', timezone=TIMEZONE)
-        scheduler.add_job(lambda: application.create_task(send_weekly_stats(application)), 'cron', day_of_week='sun', hour=DEFAULT_REMINDER_HOUR, minute=DEFAULT_REMINDER_MINUTE, timezone=TIMEZONE)
-        scheduler.add_job(lambda: application.create_task(send_monthly_stats(application)), 'cron', day=1, hour=20, minute=0, timezone=TIMEZONE)
-        scheduler.start()
-        logger.info("Scheduler started!")
+        try:
+            from apscheduler.schedulers.asyncio import AsyncIOScheduler
+            from apscheduler.triggers.cron import CronTrigger
+            scheduler = AsyncIOScheduler(timezone=TIMEZONE)
+            # Daily reminder at default time (users can customize via /settings)
+            scheduler.add_job(lambda: asyncio.ensure_future(send_daily_reminder(application)),
+                CronTrigger(hour=DEFAULT_REMINDER_HOUR, minute=DEFAULT_REMINDER_MINUTE, timezone=TIMEZONE))
+            scheduler.add_job(lambda: asyncio.ensure_future(send_weekly_stats(application)),
+                CronTrigger(day_of_week='sun', hour=DEFAULT_REMINDER_HOUR, minute=DEFAULT_REMINDER_MINUTE, timezone=TIMEZONE))
+            scheduler.add_job(lambda: asyncio.ensure_future(send_monthly_stats(application)),
+                CronTrigger(day=1, hour=20, minute=0, timezone=TIMEZONE))
+            scheduler.start()
+            logger.info(f"Scheduler started! Daily {DEFAULT_REMINDER_HOUR:02d}:{DEFAULT_REMINDER_MINUTE:02d}, weekly Sun, monthly 1st 20:00")
+        except Exception as e:
+            logger.error(f"Scheduler error: {e}")
+
     app.post_init = post_init
-    print("🤖 Finance Bot v3 — Multi-user mode started!")
-    print(f"⏰ Scheduler running: daily @20:00, weekly Sun @20:00, monthly 1st @08:00 ({TIMEZONE})")
+    print("🤖 Finance Bot v4 started!")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
