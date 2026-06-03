@@ -145,23 +145,33 @@ async def ask_finn(summary: str, question: str) -> str:
         return "Please add GEMINI_API_KEY to Railway variables."
     try:
         import aiohttp
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-        system_text = (
-            "You are Finn, a friendly and witty personal finance assistant in a Telegram bot. "
-            "You have the user's real spending data. Be concise, helpful and supportive. "
-            "Use emojis naturally. Max 150 words. Respond in same language as user."
-        )
-        prompt = f"{system_text}\n\nUser financial data:\n{summary}\n\nUser question: {question}"
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"maxOutputTokens": 300}
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=25)) as resp:
-                data = await resp.json()
-                return data["candidates"][0]["content"]["parts"][0]["text"]
+        models = ["gemini-1.5-flash", "gemini-2.0-flash"]
+        for model in models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+            prompt = (
+                "You are Finn, a friendly personal finance assistant in a Telegram bot. "
+                "Be concise, helpful and supportive. Use emojis. Max 150 words. "
+                f"Respond in same language as user.\n\nUser data:\n{summary}\n\nQuestion: {question}"
+            )
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"maxOutputTokens": 300, "temperature": 0.7},
+                "safetySettings": [
+                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+                ]
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=25)) as resp:
+                    data = await resp.json()
+                    if "candidates" in data and data["candidates"]:
+                        return data["candidates"][0]["content"]["parts"][0]["text"]
+                    logger.warning(f"Gemini {model} no candidates: {data}")
+        return "I couldn't analyze your data right now. Try a simpler question!"
     except Exception as e:
-        logger.error(f"Gemini error: {e}")
+        logger.error(f"Gemini error: {type(e).__name__}: {e}")
         return "I'm having trouble thinking right now. Try again in a moment!"
 
 def build_finn_summary(uid: int) -> str:
