@@ -987,28 +987,15 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # ── Scheduler ──
-    scheduler = AsyncIOScheduler(timezone=TIMEZONE)
-
-    # Daily reminder — runs every 5 min, checks each user's custom time
-    scheduler.add_job(
-        lambda: app.create_task(send_daily_reminder(app)),
-        CronTrigger(minute='*/5', timezone=TIMEZONE),
-        id='daily_reminder'
-    )
-    # Weekly stats — every Sunday at default time
-    scheduler.add_job(
-        lambda: app.create_task(send_weekly_stats(app)),
-        CronTrigger(day_of_week='sun', hour=DEFAULT_REMINDER_HOUR, minute=DEFAULT_REMINDER_MINUTE, timezone=TIMEZONE),
-        id='weekly_stats'
-    )
-    # Monthly stats — 1st of each month at 20:00
-    scheduler.add_job(
-        lambda: app.create_task(send_monthly_stats(app)),
-        CronTrigger(day=1, hour=20, minute=0, timezone=TIMEZONE),
-        id='monthly_stats'
-    )
-
-    scheduler.start()
+    # Scheduler setup - runs after bot starts
+    async def post_init(application):
+        scheduler = AsyncIOScheduler(timezone=TIMEZONE)
+        scheduler.add_job(lambda: application.create_task(send_daily_reminder(application)), 'cron', minute='*/5', timezone=TIMEZONE)
+        scheduler.add_job(lambda: application.create_task(send_weekly_stats(application)), 'cron', day_of_week='sun', hour=DEFAULT_REMINDER_HOUR, minute=DEFAULT_REMINDER_MINUTE, timezone=TIMEZONE)
+        scheduler.add_job(lambda: application.create_task(send_monthly_stats(application)), 'cron', day=1, hour=20, minute=0, timezone=TIMEZONE)
+        scheduler.start()
+        logger.info("Scheduler started!")
+    app.post_init = post_init
     print("🤖 Finance Bot v3 — Multi-user mode started!")
     print(f"⏰ Scheduler running: daily @20:00, weekly Sun @20:00, monthly 1st @08:00 ({TIMEZONE})")
     app.run_polling(drop_pending_updates=True)
