@@ -507,24 +507,27 @@ async def exportxls_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ─── MESSAGE HANDLER ──────────────────────────────────────────────────────────
 
 
-# --- FINN AI ASSISTANT ---
+# --- FINN AI (Gemini) ---
 import urllib.request
 import json as _json
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 def ask_finn(summary, question):
-    if not GROQ_API_KEY:
-        return "Add GROQ_API_KEY to Railway variables."
-    system = "You are Finn, a friendly finance assistant. You have the user real spending data. Be concise, helpful, friendly. Use emojis. Max 150 words. Same language as user."
-    prompt = f"User data:\n{summary}\n\nQuestion: {question}"
-    payload = _json.dumps({"model":"llama-3.1-8b-instant","messages":[{"role":"system","content":system},{"role":"user","content":prompt}],"max_tokens":300}).encode()
-    req = urllib.request.Request("https://api.groq.com/openai/v1/chat/completions", data=payload, headers={"Content-Type":"application/json","Authorization":f"Bearer {GROQ_API_KEY}"})
+    if not GEMINI_API_KEY:
+        return "Add GEMINI_API_KEY to Railway variables."
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    system = "You are Finn, a friendly personal finance assistant. You have the user real spending data. Be concise, helpful, supportive. Use emojis. Max 150 words. Same language as user."
+    prompt = f"{system}\n\nUser financial data:\n{summary}\n\nUser question: {question}"
+    payload = _json.dumps({"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"maxOutputTokens":300}}).encode()
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type":"application/json"})
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
-            return _json.loads(r.read())["choices"][0]["message"]["content"]
+            data = _json.loads(r.read())
+            return data["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as e:
-        return f"Error: {e}"
+        logger.error(f"Gemini error: {e}")
+        return "I am having trouble thinking right now. Try again in a moment!"
 
 def build_summary(uid):
     now = datetime.now()
@@ -546,7 +549,6 @@ async def finn_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "/finn where am I overspending?\n"
             "/finn how to save more?\n"
             "/finn compare to last month",
-            parse_mode="Markdown"
         )
         return
     question = " ".join(ctx.args)
