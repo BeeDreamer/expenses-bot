@@ -213,23 +213,25 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--txt);min-
   <div class="setup-card">
     <div class="setup-logo">💰</div>
     <div class="setup-title">Finance Dashboard</div>
-    <div class="setup-sub">Track your expenses, income & investments</div>
+    <div class="setup-sub">Your personal expense tracker</div>
 
-    <div id="setupAutoMsg" style="display:none;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:12px;margin-bottom:16px;font-size:13px;color:#166534;text-align:center;">
-      ✅ Logged in via Telegram automatically
+    <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:16px;margin-bottom:20px;text-align:center;">
+      <div style="font-size:28px;margin-bottom:8px;">✅</div>
+      <div id="setupAutoMsg" style="font-size:13px;color:#166534;font-weight:700;">Logged in via Telegram</div>
     </div>
 
-    <div class="setup-label">Your Telegram User ID</div>
-    <input class="setup-input" id="userId" placeholder="123456789" type="number">
-    <div class="setup-hint">
-      <b>How to find your ID:</b><br>
-      1. Open Telegram and message <a href="https://t.me/userinfobot" target="_blank" style="color:var(--acc);font-weight:700;">@userinfobot</a><br>
-      2. It will reply with your ID (e.g. <code>123456789</code>)<br>
-      3. Paste it above and tap Login<br><br>
-      <b>Or</b> open this dashboard from the bot button — your ID will be detected automatically.
+    <div id="setupManualMsg" style="display:none;background:#fef9ec;border:1px solid #fde68a;border-radius:12px;padding:16px;margin-bottom:20px;">
+      <div style="font-size:24px;margin-bottom:8px;text-align:center;">📱</div>
+      <div style="font-size:13px;color:#92400e;font-weight:700;margin-bottom:8px;text-align:center;">Open via Telegram Bot</div>
+      <div style="font-size:12px;color:#78350f;line-height:1.6;">
+        1. Open Telegram<br>
+        2. Find your Finance Bot<br>
+        3. Tap <b>📊 Open Dashboard</b> button<br><br>
+        This keeps your data secure — no passwords needed.
+      </div>
+      <a href="https://t.me/ExpensesDT_bot" target="_blank" style="display:block;margin-top:12px;padding:10px;background:var(--acc);border-radius:10px;color:#fff;font-weight:800;font-size:13px;text-decoration:none;text-align:center;">Open @ExpensesDT_bot →</a>
     </div>
 
-    <button class="setup-btn" onclick="connect()">Login →</button>
     <div class="setup-err" id="setupErr"></div>
   </div>
 </div>
@@ -485,25 +487,12 @@ function logOut(){
 }
 
 function openSetup(){
+  showSetupInstructions();
   document.getElementById('app').style.display='none';
   document.getElementById('setup').style.display='flex';
 }
 
-async function connect(){
-  const err=document.getElementById('setupErr');
-  err.style.display='none';
-  const uid=document.getElementById('userId').value.trim();
-  if(!uid){err.textContent='Please enter your Telegram User ID';err.style.display='block';return;}
-  cfg={mode:'api',apiUrl:API_URL,userId:uid};
-  localStorage.setItem('fin_cfg',JSON.stringify(cfg));
-  document.getElementById('setup').style.display='none';
-  document.getElementById('app').style.display='block';
-  await loadData();
-  // Show onboarding for new users
-  if(!localStorage.getItem('fin_onboarded')){
-    setTimeout(()=>startOnboarding(), 500);
-  }
-}
+async function connect(){ /* Telegram-only mode — no manual login */ }
 
 // ── DATA LOADING ──────────────────────────────────────────────────────────
 async function loadData(){
@@ -561,13 +550,25 @@ async function loadFromApi(){
   const data=await resp.json();
   const newTxs=(data.transactions||[]).map((r,i)=>normalizeApiRow(r,i))
     .filter(t=>!['budget','template','account'].includes(t.type));
-  // If API returns empty — user may have deleted all data via bot, clear cache
+
   if(newTxs.length===0 && allTxs.length>0){
+    // User deleted all data via bot
     allTxs=[];
     localStorage.removeItem('fin_cache');
+    localStorage.removeItem('fin_edits');
   } else {
-    allTxs=newTxs;
+    // Merge: apply local edits on top of server data
+    const edits=JSON.parse(localStorage.getItem('fin_edits')||'{}');
+    allTxs=newTxs.map(tx=>{
+      const key=makeSyncKey(tx);
+      if(edits[key]) return {...tx, ...edits[key]};
+      return tx;
+    });
+    // Keep locally-added txs that aren't in server yet
+    const localOnly=allTxs.filter(t=>String(t.id).startsWith('local_'));
+    allTxs=[...allTxs.filter(t=>!String(t.id).startsWith('local_')), ...localOnly];
   }
+
   // Load accounts from API
   try{
     const accResp=await fetch(`${cfg.apiUrl}/api/accounts?user_id=${uid}`);
@@ -579,6 +580,13 @@ async function loadFromApi(){
       }
     }
   }catch(e){}
+}
+
+// Key to identify a transaction across sessions
+function makeSyncKey(tx){
+  const d=new Date(tx.date);
+  const dateStr=`${String(d.getDate()).padStart(2,'0')}.${String(d.getMonth()+1).padStart(2,'0')}.${d.getFullYear()}`;
+  return `${dateStr}|${tx.amount}`;
 }
 
 function recalcBalances(){
@@ -908,7 +916,14 @@ function saveTx(){
   tx.description=document.getElementById('eDesc').value.trim()||tx.category;
   tx.category=document.getElementById('eCat').value;
   tx.type=document.getElementById('eType').value;
-  closeModal('txModal');renderAll();toast('Updated locally');
+  // Save edit so Sync doesn't overwrite it
+  if(!String(editTxId).startsWith('local_')){
+    const key=makeSyncKey(tx);
+    const edits=JSON.parse(localStorage.getItem('fin_edits')||'{}');
+    edits[key]={category:tx.category,type:tx.type,description:tx.description,amount:tx.amount};
+    localStorage.setItem('fin_edits',JSON.stringify(edits));
+  }
+  closeModal('txModal');renderAll();toast('Updated ✓');
 }
 function makeTxKey(tx){
   // format date back to DD.MM.YYYY
@@ -1039,16 +1054,21 @@ function renderObStep(){
 function obStep0(){
   return `
     <div class="ob-icon">💳</div>
-    <div class="ob-title">Your accounts</div>
-    <div class="ob-sub">Add your accounts with current balances.<br><br>
-    <b>💡 How it works:</b><br>
-    • <b>Primary account</b> — expenses & income are tracked here automatically. You can change it anytime in Accounts tab.<br>
-    • Other accounts update when you make a Transfer.<br>
-    • You can always edit balances manually.</div>
-    <div id="obAccList"></div>
-    <button class="ob-add-btn" style="width:100%;margin-bottom:16px" onclick="obAddAccRow()">+ Add account</button>
-    <button class="ob-btn" onclick="obSaveAccounts()">Continue →</button>
-    <button class="ob-skip" onclick="obNext()">Skip for now</button>
+    <div class="ob-title">Accounts & Balance</div>
+    <div class="ob-sub">Here's how tracking works:</div>
+    <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px;">
+      <div style="background:var(--sur2);border-radius:10px;padding:12px;font-size:12px;line-height:1.6;">
+        💼 <b>Primary account</b> — your main wallet. All expenses are deducted from it, income is added to it automatically.
+      </div>
+      <div style="background:var(--sur2);border-radius:10px;padding:12px;font-size:12px;line-height:1.6;">
+        🔄 <b>Transfers</b> — move money between accounts (e.g. from main to investments). Use the Transfer button when adding a transaction.
+      </div>
+      <div style="background:var(--sur2);border-radius:10px;padding:12px;font-size:12px;line-height:1.6;">
+        ✏️ <b>Manual edit</b> — go to Accounts tab anytime to add accounts, set balances and change which is primary.
+      </div>
+    </div>
+    <button class="ob-btn" onclick="obNext()">Got it →</button>
+    <button class="ob-skip" onclick="obNext()">Skip</button>
   `;
 }
 
@@ -1076,23 +1096,7 @@ function obAddAccRow(name='', bal='', type='bank'){
   list.appendChild(row);
 }
 
-function obSaveAccounts(){
-  const rows = document.querySelectorAll('#obAccList .ob-acc-row');
-  obData.accounts = [];
-  rows.forEach(row=>{
-    const inputs = row.querySelectorAll('input,select');
-    const type = inputs[0].value;
-    const name = inputs[1].value.trim();
-    const bal = parseFloat(inputs[2].value)||0;
-    if(name) obData.accounts.push({id:'a'+Date.now()+Math.random(),name,type,balance:bal});
-  });
-  if(obData.accounts.length>0){
-    allAccs = obData.accounts;
-    allAccs[0].primary = true;
-    saveAccounts();
-  }
-  obNext();
-}
+function obSaveAccounts(){ obNext(); }
 
 function obStep1(){
   const all = ECATS;
@@ -1195,7 +1199,6 @@ function obFinish(notifications){
 
 // ── INIT ───────────────────────────────────────────────────────────────────
 
-// Try to get Telegram ID automatically from WebApp
 function getTelegramId(){
   try{
     if(window.Telegram&&window.Telegram.WebApp){
@@ -1225,27 +1228,38 @@ if(_tgId){
   updateMonthLabel();renderChips();renderAll();
   setSyncStatus('Loading...','loading');
   setTimeout(loadData,300);
+  // Show onboarding for new users
+  if(!localStorage.getItem('fin_onboarded')){
+    setTimeout(()=>startOnboarding(), 800);
+  }
 } else if(_savedCfg){
-  // Previously logged in
+  // Previously logged in via browser (legacy support)
   try{
     cfg=JSON.parse(_savedCfg);
-    if(cfg.mode==='api') cfg.apiUrl=API_URL; // always use latest API URL
-    document.getElementById('setup').style.display='none';
-    document.getElementById('app').style.display='block';
-    if(cfg.userId) document.getElementById('userId').value=cfg.userId;
-    const _c=localStorage.getItem('fin_cache');
-    if(_c){try{const d=JSON.parse(_c);allTxs=d.txs||[];}catch(e){}}
-    const _a=localStorage.getItem('fin_accounts');
-    if(_a){try{allAccs=JSON.parse(_a);}catch(e){allAccs=getDefaultAccs();}}
-    else allAccs=getDefaultAccs();
-    updateMonthLabel();renderChips();renderAll();
-    setSyncStatus('Loading...','loading');
-    setTimeout(loadData,300);
-  }catch(e){}
+    cfg.apiUrl=API_URL;
+    if(cfg.userId){
+      document.getElementById('setup').style.display='none';
+      document.getElementById('app').style.display='block';
+      const _c=localStorage.getItem('fin_cache');
+      if(_c){try{const d=JSON.parse(_c);allTxs=d.txs||[];}catch(e){}}
+      const _a=localStorage.getItem('fin_accounts');
+      if(_a){try{allAccs=JSON.parse(_a);}catch(e){allAccs=getDefaultAccs();}}
+      else allAccs=getDefaultAccs();
+      updateMonthLabel();renderChips();renderAll();
+      setSyncStatus('Loading...','loading');
+      setTimeout(loadData,300);
+    } else {
+      showSetupInstructions();
+    }
+  }catch(e){ showSetupInstructions(); }
 } else {
-  // New user — show setup, try to pre-fill ID hint
-  const autoMsg=document.getElementById('setupAutoMsg');
-  if(autoMsg) autoMsg.style.display='none';
+  // New user opening directly in browser
+  showSetupInstructions();
+}
+
+function showSetupInstructions(){
+  document.getElementById('setupAutoMsg').parentNode.style.display='none';
+  document.getElementById('setupManualMsg').style.display='block';
 }
 
 updateMonthLabel();
