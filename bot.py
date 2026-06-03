@@ -166,9 +166,12 @@ async def ask_finn(summary: str, question: str) -> str:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=25)) as resp:
                     data = await resp.json()
+                    logger.info(f"Gemini {model} status={resp.status} keys={list(data.keys())}")
                     if "candidates" in data and data["candidates"]:
                         return data["candidates"][0]["content"]["parts"][0]["text"]
-                    logger.warning(f"Gemini {model} no candidates: {data}")
+                    if "error" in data:
+                        logger.error(f"Gemini {model} error: {data['error']}")
+                    logger.warning(f"Gemini {model} full response: {str(data)[:500]}")
         return "I couldn't analyze your data right now. Try a simpler question!"
     except Exception as e:
         logger.error(f"Gemini error: {type(e).__name__}: {e}")
