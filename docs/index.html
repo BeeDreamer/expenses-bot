@@ -383,6 +383,19 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--txt);min-
   </div>
 </div>
 
+<!-- CATEGORY MODAL -->
+<div class="modal-bg" id="catModal">
+  <div class="modal">
+    <div class="modal-head">
+      <span class="modal-title" id="catModalTitle">Category</span>
+      <button class="modal-x" onclick="closeModal('catModal')">×</button>
+    </div>
+    <div id="catModalSummary" style="display:flex;gap:8px;margin-bottom:14px;"></div>
+    <div class="stitle" style="margin-bottom:8px">Transactions</div>
+    <div class="txlist" id="catModalList"></div>
+  </div>
+</div>
+
 <!-- TX MODAL -->
 <div class="modal-bg" id="txModal">
   <div class="modal">
@@ -840,7 +853,7 @@ function renderCategories(){
   txs.forEach(t=>{const k=cleanCatName(t.category);by[k]=(by[k]||0)+t.amount;});
   const total=Object.values(by).reduce((a,b)=>a+b,0);
   const sorted=Object.entries(by).sort((a,b)=>b[1]-a[1]);
-  document.getElementById('catDetails').innerHTML=sorted.length?sorted.map(([cat,amt],i)=>`<div class="catitem"><div class="cath"><span class="catname">${catIcon(cat)} ${cat}</span><span class="catamt">−${amt.toFixed(2)} €</span></div><div class="catbar"><div class="catfill" style="width:${total?amt/total*100:0}%;background:${COLORS[i%COLORS.length]}"></div></div><div class="catmeta"><span>${total?(amt/total*100).toFixed(1):0}% of total</span><span>${txs.filter(t=>cleanCatName(t.category)===cat).length} txns</span></div></div>`).join(''):'<div class="empty">No expenses</div>';
+  document.getElementById('catDetails').innerHTML=sorted.length?sorted.map(([cat,amt],i)=>`<div class="catitem" onclick="openCatModal('${cat.replace(/'/g,"\\'")}')" style="cursor:pointer"><div class="cath"><span class="catname">${catIcon(cat)} ${cat}</span><span class="catamt">−${amt.toFixed(2)} €</span></div><div class="catbar"><div class="catfill" style="width:${total?amt/total*100:0}%;background:${COLORS[i%COLORS.length]}"></div></div><div class="catmeta"><span>${total?(amt/total*100).toFixed(1):0}% of total</span><span>${txs.filter(t=>cleanCatName(t.category)===cat).length} txns · tap to view</span></div></div>`).join(''):'<div class="empty">No expenses</div>';
 }
 
 function renderCompare(){
@@ -896,7 +909,29 @@ function renderAccounts(){
 }
 
 // ── TX MODAL ───────────────────────────────────────────────────────────────
-function openTxModal(id){
+function openCatModal(cat){
+  const txs=getFiltered().filter(t=>t.type==='expense'&&cleanCatName(t.category)===cat);
+  const total=txs.reduce((s,t)=>s+t.amount,0);
+  const avg=txs.length?total/txs.length:0;
+  const lbl=period==='month'?'this month':period==='year'?'this year':'all time';
+
+  document.getElementById('catModalTitle').textContent=`${catIcon(cat)} ${cat}`;
+  document.getElementById('catModalSummary').innerHTML=`
+    <div class="scard" style="flex:1"><div class="slbl">Total</div><div class="sval r" style="font-size:16px">−${total.toFixed(2)} €</div></div>
+    <div class="scard" style="flex:1"><div class="slbl">Transactions</div><div class="sval a" style="font-size:16px">${txs.length}</div></div>
+    <div class="scard" style="flex:1"><div class="slbl">Avg per txn</div><div class="sval" style="font-size:16px;color:var(--mut)">${avg.toFixed(2)} €</div></div>
+  `;
+  const sorted=[...txs].sort((a,b)=>new Date(b.date)-new Date(a.date));
+  document.getElementById('catModalList').innerHTML=sorted.length
+    ?sorted.map(t=>{
+      const date=new Date(t.date).toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'2-digit'});
+      const name=t.description&&t.description!=='—'?t.description:cat;
+      return `<div class="txi" onclick="closeModal('catModal');openTxModal('${t.id}')"><div class="txl"><span class="tx-ico">${catIcon(t.category)}</span><div><div class="tx-desc">${name}</div><div class="tx-meta">${date}</div></div></div><div class="txr"><span class="tx-amt r">−${parseFloat(t.amount).toFixed(2)} €</span></div></div>`;
+    }).join('')
+    :'<div class="empty">No transactions</div>';
+
+  openModal('catModal');
+}
   editTxId=id;
   const tx=allTxs.find(t=>t.id===id);if(!tx)return;
   document.getElementById('eAmt').value=tx.amount;
