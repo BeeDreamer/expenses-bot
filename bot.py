@@ -505,6 +505,57 @@ async def exportxls_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 # ─── MESSAGE HANDLER ──────────────────────────────────────────────────────────
+
+
+# --- FINN AI ASSISTANT ---
+import urllib.request
+import json as _json
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+
+def ask_finn(summary, question):
+    if not GROQ_API_KEY:
+        return "Add GROQ_API_KEY to Railway variables."
+    system = "You are Finn, a friendly finance assistant. You have the user real spending data. Be concise, helpful, friendly. Use emojis. Max 150 words. Same language as user."
+    prompt = f"User data:\n{summary}\n\nQuestion: {question}"
+    payload = _json.dumps({"model":"llama-3.1-8b-instant","messages":[{"role":"system","content":system},{"role":"user","content":prompt}],"max_tokens":300}).encode()
+    req = urllib.request.Request("https://api.groq.com/openai/v1/chat/completions", data=payload, headers={"Content-Type":"application/json","Authorization":f"Bearer {GROQ_API_KEY}"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return _json.loads(r.read())["choices"][0]["message"]["content"]
+    except Exception as e:
+        return f"Error: {e}"
+
+def build_summary(uid):
+    now = datetime.now()
+    exp, inc, by_cat = get_month_stats(uid, now.strftime("%Y-%m"))
+    top = sorted(by_cat.items(), key=lambda x: x[1], reverse=True)[:5]
+    lines = [f"Month: {now.strftime('%B %Y')}", f"Expenses: {exp:.2f}EUR", f"Income: {inc:.2f}EUR", f"Balance: {inc-exp:+.2f}EUR", "Top categories:"]
+    for cat, amt in top:
+        lines.append(f"  {cat}: {amt:.2f}EUR")
+    return "\n".join(lines)
+
+async def finn_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    name = update.effective_user.first_name or "friend"
+    if not ctx.args:
+        await update.message.reply_text(
+            "Hi " + name + "! I am Finn your finance buddy!\n\n"
+            "Ask me anything:\n"
+            "/finn how am I doing this month?\n"
+            "/finn where am I overspending?\n"
+            "/finn how to save more?\n"
+            "/finn compare to last month",
+            parse_mode="Markdown"
+        )
+        return
+    question = " ".join(ctx.args)
+    await update.message.chat.send_action("typing")
+    summary = build_summary(uid)
+    response = ask_finn(summary, question)
+    await update.message.reply_text("Finn says:\n\n" + response)
+
+
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     uid = update.effective_user.id
@@ -650,6 +701,124 @@ async def settings_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"📅 Monthly report on the 1st at 20:00",
             parse_mode="Markdown"
         )
+
+
+# ─── GROQ AI (Finn) ───────────────────────────────────────────────────────────
+import urllib.request, json as _json
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = "llama-3.1-8b-instant"
+
+def ask_finn(user_data: str, user_question: str) -> str:
+    """Call Groq API with user financial data and question."""
+    if not GROQ_API_KEY:
+        return "⚠️ Groq API key not configured. Add GROQ_API_KEY to Railway variables."
+    
+    system_prompt = """You are Finn 🦊, a friendly and witty personal finance assistant built into a Telegram expense tracker. 
+You have access to the user's real financial data. Be conversational, supportive, and occasionally funny — like a smart friend who happens to know finance.
+Keep responses concise (max 200 words). Use emojis naturally. Give concrete actionable advice based on their actual data.
+Never be judgmental about spending. If they overspend, be gently curious, not preachy.
+Respond in the same language the user writes in."""
+
+    user_prompt = f"""Here is the user's financial data:
+{user_data}
+
+User question: {user_question}
+
+Give a helpful, friendly response based on their actual data."""
+
+    payload = _json.dumps({
+        "model": GROQ_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "max_tokens": 400,
+        "temperature": 0.7
+    }).encode('utf-8')
+
+    req = urllib.request.Request(
+        "https://api.groq.com/openai/v1/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {GROQ_API_KEY}"
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = _json.loads(resp.read())
+            return data['choices'][0]['message']['content']
+    except Exception as e:
+        logger.error(f"Groq error: {e}")
+        return "😅 I'm having trouble thinking right now. Try again in a moment!"
+
+def build_financial_summary(user_id: int) -> str:
+    """Build a financial summary string for Finn."""
+    now = datetime.now()
+    cur_month = now.strftime("%Y-%m")
+    prev_month = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    
+    exp_cur, inc_cur, by_cat_cur = get_month_stats(user_id, cur_month)
+    exp_prev, inc_prev, _ = get_month_stats(user_id, prev_month)
+    
+    rows = get_tx(user_id)
+    total_txs = len([r for r in rows if r.get('Type') not in ('budget', 'template', 'setting')])
+    
+    top_cats = sorted(by_cat_cur.items(), key=lambda x: x[1], reverse=True)[:5]
+    
+    summary = f"""
+CURRENT MONTH ({cur_month}):
+- Total expenses: {exp_cur:.2f}€
+- Total income: {inc_cur:.2f}€  
+- Balance: {inc_cur - exp_cur:+.2f}€
+- Transactions: {len([r for r in rows if r.get('Month') == cur_month])}
+
+LAST MONTH ({prev_month}):
+- Expenses: {exp_prev:.2f}€
+- Income: {inc_prev:.2f}€
+
+TOP SPENDING CATEGORIES THIS MONTH:
+{chr(10).join(f"- {cat}: {amt:.2f}€" for cat, amt in top_cats) if top_cats else "- No expenses yet"}
+
+TOTAL TRACKED TRANSACTIONS: {total_txs}
+"""
+    return summary.strip()
+
+async def finn_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Finn AI assistant command."""
+    uid = update.effective_user.id
+    name = update.effective_user.first_name or "there"
+    
+    if not ctx.args:
+        await update.message.reply_text(
+            f"Hey {name}! I'm Finn 🦊 your personal finance assistant!\n\n"
+            "Ask me anything about your finances:\n"
+            "`/finn how am I doing this month?`\n"
+            "`/finn where am I overspending?`\n"
+            "`/finn how can I save more?`\n"
+            "`/finn compare my spending to last month`\n"
+            "`/finn give me a spending tip`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    question = " ".join(ctx.args)
+    
+    # Show typing indicator
+    await update.message.chat.send_action("typing")
+    
+    try:
+        summary = build_financial_summary(uid)
+        response = ask_finn(summary, question)
+        await update.message.reply_text(
+            f"🦊 *Finn says:*\n\n{response}",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Finn error: {e}")
+        await update.message.reply_text("😅 Something went wrong. Try again!")
+
 
 # ─── SCHEDULER FUNCTIONS ──────────────────────────────────────────────────────
 
@@ -810,6 +979,8 @@ def main():
     app.add_handler(CommandHandler("deletedata", deletedata_cmd))
     app.add_handler(CommandHandler("exportxls", exportxls_cmd))
     app.add_handler(CommandHandler("settings", settings_cmd))
+    app.add_handler(CommandHandler("finn", finn_cmd))
+    app.add_handler(CommandHandler("finn", finn_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
