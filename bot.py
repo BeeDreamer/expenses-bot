@@ -145,9 +145,14 @@ async def ask_finn(summary: str, question: str) -> str:
         return "Please add GEMINI_API_KEY to Railway variables."
     try:
         import aiohttp
-        models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
-        for model in models:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        models = [
+            ("v1beta", "gemini-2.0-flash"),
+            ("v1beta", "gemini-2.0-flash-lite"),
+            ("v1", "gemini-1.5-flash-latest"),
+            ("v1", "gemini-1.5-flash"),
+        ]
+        for api_ver, model in models:
+            url = f"https://generativelanguage.googleapis.com/{api_ver}/models/{model}:generateContent?key={GEMINI_API_KEY}"
             prompt = (
                 "You are Finn, a friendly personal finance assistant in a Telegram bot. "
                 "Be concise, helpful and supportive. Use emojis. Max 150 words. "
@@ -171,6 +176,8 @@ async def ask_finn(summary: str, question: str) -> str:
                         return data["candidates"][0]["content"]["parts"][0]["text"]
                     if "error" in data:
                         logger.error(f"Gemini {model} error: {data['error']}")
+                        # skip quota/not-found errors and try next model
+                        continue
                     logger.warning(f"Gemini {model} full response: {str(data)[:500]}")
         return "I couldn't analyze your data right now. Try a simpler question!"
     except Exception as e:
