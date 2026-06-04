@@ -145,7 +145,7 @@ async def ask_finn(summary: str, question: str) -> str:
         return "Please add GEMINI_API_KEY to Railway variables."
     try:
         import aiohttp
-        models = ["gemini-1.5-flash", "gemini-2.0-flash"]
+        models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
         for model in models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
             prompt = (
@@ -492,6 +492,14 @@ async def exportxls_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     uid = update.effective_user.id
+
+    # Fallback: /finn sent as plain text (e.g. tapped from code block — no bot_command entity)
+    if text.lower().startswith('/finn'):
+        question = text[5:].strip()
+        ctx.args = question.split() if question else []
+        await finn_cmd(update, ctx)
+        return
+
     date_pattern = r"(\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?)"
     custom_date = None
     date_match = re.search(date_pattern, text)
