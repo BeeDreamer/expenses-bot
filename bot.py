@@ -534,12 +534,14 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     uid = update.effective_user.id
 
-    # Fallback: /finn sent as plain text (e.g. tapped from code block — no bot_command entity)
-    if text.lower().startswith('/finn'):
-        question = text[5:].strip()
-        ctx.args = question.split() if question else []
-        await finn_cmd(update, ctx)
-        return
+    # Allow calling Finn without slash: "финн ...", "finn ..."
+    lower = text.lower()
+    for trigger in ('/finn', 'финн', 'finn'):
+        if lower.startswith(trigger):
+            question = text[len(trigger):].strip()
+            ctx.args = question.split() if question else []
+            await finn_cmd(update, ctx)
+            return
 
     date_pattern = r"(\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?)"
     custom_date = None
