@@ -140,44 +140,41 @@ def get_month_stats(user_id, month):
     return exp, inc, by_cat
 
 # ─── FINN AI ───────────────────────────────────────────────────────────────────
-_gemini_model_cache = None
+_gemini_models_cache: list | None = None
 
-async def get_gemini_model() -> tuple[str, str] | None:
-    """Find first available Gemini model that supports generateContent."""
-    global _gemini_model_cache
-    if _gemini_model_cache:
-        return _gemini_model_cache
+async def get_gemini_models() -> list:
+    """Return ordered list of (api_ver, model_id) tuples that support generateContent."""
+    global _gemini_models_cache
+    if _gemini_models_cache:
+        return _gemini_models_cache
     import aiohttp
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}&pageSize=50"
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 data = await resp.json()
-        models = data.get("models", [])
-        # prefer flash models for speed/cost
-        prefer = ["flash", "pro"]
-        for keyword in prefer:
-            for m in models:
+        all_models = data.get("models", [])
+        result = []
+        for keyword in ["flash", "pro"]:
+            for m in all_models:
                 name = m.get("name", "")
-                methods = m.get("supportedGenerationMethods", [])
-                if keyword in name and "generateContent" in methods:
-                    model_id = name.split("/")[-1]
-                    logger.info(f"Selected Gemini model: {model_id}")
-                    _gemini_model_cache = ("v1beta", model_id)
-                    return _gemini_model_cache
+                if keyword in name and "generateContent" in m.get("supportedGenerationMethods", []):
+                    result.append(("v1beta", name.split("/")[-1]))
+        logger.info(f"Available Gemini models: {[m for _, m in result]}")
+        _gemini_models_cache = result
+        return result
     except Exception as e:
-        logger.error(f"get_gemini_model error: {e}")
-    return None
+        logger.error(f"get_gemini_models error: {e}")
+        return []
 
 async def ask_finn(summary: str, question: str) -> str:
     if not GEMINI_API_KEY:
         return "Please add GEMINI_API_KEY to Railway variables."
     try:
         import aiohttp
-        model_info = await get_gemini_model()
-        if not model_info:
+        models = await get_gemini_models()
+        if not models:
             return "Couldn't connect to Gemini API. Check your API key!"
-        models = [model_info]
         for api_ver, model in models:
             url = f"https://generativelanguage.googleapis.com/{api_ver}/models/{model}:generateContent?key={GEMINI_API_KEY}"
             prompt = (
@@ -209,9 +206,7 @@ async def ask_finn(summary: str, question: str) -> str:
                             return text.strip()
                     if "error" in data:
                         logger.error(f"Gemini {model} error: {data['error']}")
-                        # reset cache so next call tries a different model
-                        _gemini_model_cache = None
-                        continue
+                        continue  # try next model
                     logger.warning(f"Gemini {model} full response: {str(data)[:500]}")
         return "I couldn't analyze your data right now. Try a simpler question!"
     except Exception as e:
