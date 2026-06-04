@@ -239,27 +239,31 @@ def build_finn_summary(uid: int) -> str:
 async def finn_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     name = update.effective_user.first_name or "friend"
+    # works for both direct command and button callback
+    msg = update.message or (update.callback_query.message if update.callback_query else None)
+    if not msg:
+        return
     if not ctx.args:
-        await update.message.reply_text(
+        await msg.reply_text(
             f"Hi {name}! I'm Finn 🦊 your personal finance buddy!\n\n"
             "Ask me anything:\n"
-            "`/finn how am I doing this month?`\n"
-            "`/finn where am I overspending?`\n"
-            "`/finn how can I save more?`\n"
-            "`/finn compare to last month`\n"
-            "`/finn give me a saving tip`",
+            "`финн как дела в этом месяце?`\n"
+            "`финн где я перетрачиваю?`\n"
+            "`финн как сэкономить?`\n"
+            "`финн сравни с прошлым месяцем`\n"
+            "`финн дай совет по экономии`",
             parse_mode="Markdown"
         )
         return
     question = " ".join(ctx.args)
-    await update.message.chat.send_action("typing")
+    await msg.chat.send_action("typing")
     try:
         summary = build_finn_summary(uid)
         response = await ask_finn(summary, question)
-        await update.message.reply_text(f"🦊 Finn says:\n\n{response}")
+        await msg.reply_text(f"🦊 Finn says:\n\n{response}")
     except Exception as e:
         logger.error(f"Finn cmd error: {e}")
-        await update.message.reply_text("Something went wrong. Try again!")
+        await msg.reply_text("Something went wrong. Try again!")
 
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
 def cat_keyboard(tx_type="expense"):
