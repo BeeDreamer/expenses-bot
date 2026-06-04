@@ -140,17 +140,44 @@ def get_month_stats(user_id, month):
     return exp, inc, by_cat
 
 # ─── FINN AI ───────────────────────────────────────────────────────────────────
+_gemini_model_cache = None
+
+async def get_gemini_model() -> tuple[str, str] | None:
+    """Find first available Gemini model that supports generateContent."""
+    global _gemini_model_cache
+    if _gemini_model_cache:
+        return _gemini_model_cache
+    import aiohttp
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}&pageSize=50"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                data = await resp.json()
+        models = data.get("models", [])
+        # prefer flash models for speed/cost
+        prefer = ["flash", "pro"]
+        for keyword in prefer:
+            for m in models:
+                name = m.get("name", "")
+                methods = m.get("supportedGenerationMethods", [])
+                if keyword in name and "generateContent" in methods:
+                    model_id = name.split("/")[-1]
+                    logger.info(f"Selected Gemini model: {model_id}")
+                    _gemini_model_cache = ("v1beta", model_id)
+                    return _gemini_model_cache
+    except Exception as e:
+        logger.error(f"get_gemini_model error: {e}")
+    return None
+
 async def ask_finn(summary: str, question: str) -> str:
     if not GEMINI_API_KEY:
         return "Please add GEMINI_API_KEY to Railway variables."
     try:
         import aiohttp
-        models = [
-            ("v1beta", "gemini-2.0-flash"),
-            ("v1beta", "gemini-2.0-flash-lite"),
-            ("v1", "gemini-1.5-flash-latest"),
-            ("v1", "gemini-1.5-flash"),
-        ]
+        model_info = await get_gemini_model()
+        if not model_info:
+            return "Couldn't connect to Gemini API. Check your API key!"
+        models = [model_info]
         for api_ver, model in models:
             url = f"https://generativelanguage.googleapis.com/{api_ver}/models/{model}:generateContent?key={GEMINI_API_KEY}"
             prompt = (
@@ -176,7 +203,8 @@ async def ask_finn(summary: str, question: str) -> str:
                         return data["candidates"][0]["content"]["parts"][0]["text"]
                     if "error" in data:
                         logger.error(f"Gemini {model} error: {data['error']}")
-                        # skip quota/not-found errors and try next model
+                        # reset cache so next call tries a different model
+                        _gemini_model_cache = None
                         continue
                     logger.warning(f"Gemini {model} full response: {str(data)[:500]}")
         return "I couldn't analyze your data right now. Try a simpler question!"
