@@ -183,7 +183,7 @@ async def ask_finn(summary: str, question: str) -> str:
             prompt = (
                 "You are Finn, a friendly personal finance assistant in a Telegram bot. "
                 "Be concise, helpful and supportive. Use emojis. Max 150 words. "
-                f"Respond in same language as user.\n\nUser data:\n{summary}\n\nQuestion: {question}"
+                f"Always respond in English.\n\nUser data:\n{summary}\n\nQuestion: {question}"
             )
             payload = {
                 "contents": [{"parts": [{"text": prompt}]}],
@@ -247,11 +247,11 @@ async def finn_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(
             f"Hi {name}! I'm Finn 🦊 your personal finance buddy!\n\n"
             "Ask me anything:\n"
-            "`финн как дела в этом месяце?`\n"
-            "`финн где я перетрачиваю?`\n"
-            "`финн как сэкономить?`\n"
-            "`финн сравни с прошлым месяцем`\n"
-            "`финн дай совет по экономии`",
+            "`финн how am I doing this month?`\n"
+            "`финн where am I overspending?`\n"
+            "`финн how can I save more?`\n"
+            "`финн compare to last month`\n"
+            "`финн give me a saving tip`",
             parse_mode="Markdown"
         )
         return
