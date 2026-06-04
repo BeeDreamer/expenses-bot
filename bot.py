@@ -247,11 +247,11 @@ async def finn_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(
             f"Hi {name}! I'm Finn 🦊 your personal finance buddy!\n\n"
             "Ask me anything:\n"
-            "`финн how am I doing this month?`\n"
-            "`финн where am I overspending?`\n"
-            "`финн how can I save more?`\n"
-            "`финн compare to last month`\n"
-            "`финн give me a saving tip`",
+            "`finn how am I doing this month?`\n"
+            "`finn where am I overspending?`\n"
+            "`finn how can I save more?`\n"
+            "`finn compare to last month`\n"
+            "`finn give me a saving tip`",
             parse_mode="Markdown"
         )
         return
