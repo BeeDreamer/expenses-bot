@@ -187,7 +187,7 @@ async def ask_finn(summary: str, question: str) -> str:
             )
             payload = {
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"maxOutputTokens": 300, "temperature": 0.7},
+                "generationConfig": {"maxOutputTokens": 1024, "temperature": 0.7},
                 "safetySettings": [
                     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -200,7 +200,13 @@ async def ask_finn(summary: str, question: str) -> str:
                     data = await resp.json()
                     logger.info(f"Gemini {model} status={resp.status} keys={list(data.keys())}")
                     if "candidates" in data and data["candidates"]:
-                        return data["candidates"][0]["content"]["parts"][0]["text"]
+                        parts = data["candidates"][0]["content"].get("parts", [])
+                        # join all non-thought parts (thinking models return thought + response)
+                        text = "".join(
+                            p.get("text", "") for p in parts if not p.get("thought", False)
+                        )
+                        if text.strip():
+                            return text.strip()
                     if "error" in data:
                         logger.error(f"Gemini {model} error: {data['error']}")
                         # reset cache so next call tries a different model
